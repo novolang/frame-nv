@@ -97,6 +97,9 @@ jobs:
           base=https://novo-lang.org/tools
           if curl -fsSL -o .novo-audit/shard_audit.sh "$base/shard_audit.sh" \
              && curl -fsSL -o .novo-audit/shard_source_audit.py "$base/shard_source_audit.py"; then
+            # The history helper is optional: without it the audit's
+            # history row reports "not applicable" for a standalone repository.
+            curl -fsSL -o .novo-audit/comment_history_refs.py "$base/comment_history_refs.py" || true
             NOVO="$(command -v novo)" bash .novo-audit/shard_audit.sh --strict .
           else
             echo "::warning::novo-lang.org is not serving the shard audit; skipping it"
