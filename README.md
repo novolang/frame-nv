@@ -1,3 +1,5 @@
+> Developed in the novo-lang monorepo under `orbit/frame-nv`, which is the source of truth until this package graduates out of it.  This repository is a mirror: it is where CI runs and where releases are tagged, and changes are made upstream.
+
 # frame-nv
 
 A packet on a stream that has no packets. A serial link, a pipe and a
