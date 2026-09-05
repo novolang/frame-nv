@@ -4,6 +4,25 @@ Newest first.  Below `1.0.0` a breaking change bumps the **minor**
 number and a compatible one the **patch**; see [Version numbers in the
 Orbit package registry](https://novo-lang.org/docs/registry/semver.html).
 
+## 0.1.1
+
+A patch: the same frames, byte for byte.  The hand-computed fixtures,
+the streaming reader and the corruption cases all still pass.
+
+- **The manifest carries the fields the registry browses by.**
+  `category`, `tags`, `repository` and `maintainers` were added after
+  `0.1.0` was published, and a published version is never replaced, so
+  this release is the first one the packages page can shelve and
+  filter.
+- **The packages under it are republished.**  `varint-nv 0.1.1` and
+  `leb128-nv 0.1.2` rewrite their bit arithmetic onto the operators
+  with their vectors unchanged; the ranges here already admit them, so
+  a `novo pkg update` picks the whole diamond up.
+
+There is no bit arithmetic in this module to rewrite: it delegates the
+length prefix to `varint-nv`, the checksum to `crc-nv` and the framing
+to `cobs-nv`, and what is left is buffer arithmetic.
+
 ## 0.1.0
 
 First release: `max_encoded_len`, `encode_into`, `encode`, `decode`,
