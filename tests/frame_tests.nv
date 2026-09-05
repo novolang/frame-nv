@@ -1,0 +1,319 @@
+// frame_tests.nv — frames computed by hand, the round trip at every
+// length, each way a frame can be wrong, and the streaming reader.
+//
+// Run from the package directory:
+//   novo test tests/frame_tests.nv
+//
+// The four frames below were computed from the format's definition —
+// LEB128 by hand, CRC-32C from the Castagnoli polynomial, COBS from
+// Cheshire and Baker's description — rather than by running this
+// encoder, so the suite is evidence that the bytes on the wire are the
+// bytes the layout says, and not merely self-consistent.
+
+use std.bytes
+use std.list
+use std.test
+use frame
+
+// The frame carrying "hi": length 02, payload 68 69, CRC-32C 2bf75f67
+// little-endian, COBS-stuffed under one 8-byte block header, delimiter.
+fn frame_of_hi() -> Str
+    "08026869675ff72b00"
+
+// The frame carrying nothing.  Its length prefix IS a zero byte, so
+// COBS opens with a one-byte block that stands for it.
+fn frame_of_empty() -> Str
+    "010551537d5200"
+
+// A payload full of zeros, which is what COBS is for: three of them
+// vanish into block headers and none reaches the wire.
+fn payload_with_zeros() -> Str
+    "010002000003"
+
+fn frame_with_zeros() -> Str
+    "0306010202010603404ddf8d00"
+
+fn frame_of_novo_lang() -> Str
+    "0f096e6f766f2d6c616e67a2af700700"
+
+fn buf(hex: Str) -> Bytes
+    bytes.from_hex(hex) ?? bytes.zeros(0)
+
+// `n` bytes with no zero among them, so COBS's overhead is at its
+// worst case: every byte reaches the wire and every block header is an
+// extra byte on top.
+fn zero_free(n: Int) -> Bytes
+    var c = bytes.cursor_le(bytes.zeros(n))
+    for i in 0 .. n
+        c.put_u8(1 + i % 254)
+    c.finish()
+
+@test
+fn test_the_frames_computed_by_hand() [io]
+    test.assert_eq(bytes.to_hex(frame.encode(buf("6869"))), frame_of_hi())
+    test.assert_eq(bytes.to_hex(frame.encode(bytes.zeros(0))), frame_of_empty())
+    test.assert_eq(bytes.to_hex(frame.encode(buf(payload_with_zeros()))),
+                   frame_with_zeros())
+    test.assert_eq(bytes.to_hex(frame.encode(buf("6e6f766f2d6c616e67"))),
+                   frame_of_novo_lang())
+
+@test
+fn test_those_frames_decode_to_what_they_carry() [io]
+    test.assert_eq(bytes.to_hex(frame.decode(buf(frame_of_hi()))!), "6869")
+    test.assert_eq(bytes.len(frame.decode(buf(frame_of_empty()))!), 0)
+    test.assert_eq(bytes.to_hex(frame.decode(buf(frame_with_zeros()))!),
+                   payload_with_zeros())
+    test.assert_eq(bytes.to_hex(frame.decode(buf(frame_of_novo_lang()))!),
+                   "6e6f766f2d6c616e67")
+
+@test
+fn test_round_trip_over_every_length_up_to_300() [io]
+    // Past 254 the COBS layer opens a second block, and past 127 the
+    // length prefix takes a second byte; both boundaries are inside
+    // this range.
+    for n in 0 .. 301
+        test.case("length ${n}")
+        let payload = zero_free(n)
+        test.assert_eq(bytes.to_hex(frame.decode(frame.encode(payload))!),
+                       bytes.to_hex(payload))
+
+@test
+fn test_round_trip_over_an_all_zero_payload() [io]
+    // The other extreme: every byte is the delimiter, so every byte
+    // becomes a block header and none of them reaches the wire.
+    for n in 0 .. 301
+        test.case("length ${n}")
+        let payload = bytes.zeros(n)
+        test.assert_eq(bytes.len(frame.decode(frame.encode(payload))!), n)
+
+@test
+fn test_a_frame_carries_no_zero_before_its_delimiter() [io]
+    // The property the whole design rests on: if a zero could occur
+    // inside a frame, the delimiter would end frames in the middle.
+    for n in 0 .. 300
+        test.case("length ${n}")
+        let wire = frame.encode(bytes.zeros(n))
+        var zeros = 0
+        for i in 0 .. bytes.len(wire) - 1
+            if (bytes.byte_at(wire, i) ?? 1) == 0
+                zeros = zeros + 1
+        test.assert_eq(zeros, 0)
+
+@test
+fn test_max_encoded_len_is_never_exceeded_and_is_tight() [io]
+    // A caller sizes a buffer from this number, so exceeding it is a
+    // buffer overrun — and a bound nothing comes near is a bound nobody
+    // can check, so the zero-free payload's distance from it is
+    // asserted too.  That distance is zero everywhere except where the
+    // body is a whole number of 254-byte COBS blocks, where the bound
+    // reserves one byte the encoder does not need.
+    for n in 0 .. 300
+        test.case("length ${n}")
+        let worst = bytes.len(frame.encode(zero_free(n)))
+        let bound = frame.max_encoded_len(n)
+        test.assert_true(worst <= bound, "${worst} bytes exceeded a bound of ${bound}")
+        test.assert_true(worst >= bound - 1, "${worst} bytes is far under a bound of ${bound}")
+        test.assert_true(bytes.len(frame.encode(bytes.zeros(n))) <= bound,
+                         "an all-zero payload exceeded max_encoded_len")
+
+@test
+fn test_the_in_place_form_writes_into_the_callers_buffer() [io]
+    // A cursor owns its buffer, so a write through one lands where the
+    // caller can read it — which is why the in-place form takes a
+    // cursor rather than a buffer and an offset.
+    let payload = buf("6869")
+    var c = bytes.cursor_le(bytes.zeros(frame.max_encoded_len(2) * 2))
+    let a = frame.encode_into(c, payload)
+    let b = frame.encode_into(c, payload)
+    test.assert_eq(a, b)
+    test.assert_eq(bytes.to_hex(bytes.slice(c.finish(), 0, a + b)),
+                   frame_of_hi() + frame_of_hi())
+
+@test
+fn test_a_frame_is_decoded_with_or_without_its_delimiter() [io]
+    // A receiver that split its input at each zero has already removed
+    // the delimiter; `encode`'s own output still carries it.  Both are
+    // the same frame.
+    let whole = buf(frame_of_hi())
+    let split = bytes.slice(whole, 0, bytes.len(whole) - 1)
+    test.assert_eq(bytes.to_hex(frame.decode(whole)!), "6869")
+    test.assert_eq(bytes.to_hex(frame.decode(split)!), "6869")
+
+@test
+fn test_a_changed_byte_is_caught_by_the_check() [io]
+    // One bit of the payload, flipped where it disturbs no block
+    // header: the frame is still well formed and still decodes to a
+    // payload — which is exactly the failure a length and a delimiter
+    // cannot catch, and the check exists for.
+    let wire = buf(frame_of_novo_lang())
+    let damaged = bytes.set_u8(wire, 4, 0x77)
+    match frame.decode(damaged)
+        Ok(_)  => test.fail("a corrupted frame decoded")
+        Err(e) => test.assert_true(str.contains(e.message(), "corrupt"),
+                                   "wrong message: ${e.message()}")
+
+@test
+fn test_a_length_prefix_that_overruns_the_frame_is_a_value() [io]
+    // The prefix claims nine payload bytes and the frame holds four.
+    let body = buf("096e6f766f00000000")
+    match frame.decode(cobs.encode(body))
+        Ok(_)  => test.fail("an overrunning length decoded")
+        Err(e) => test.assert_true(str.contains(e.message(), "ended after"),
+                                   "wrong message: ${e.message()}")
+
+@test
+fn test_a_frame_longer_than_its_length_prefix_says_is_a_value() [io]
+    // One byte of payload, four of trailer, and one byte too many.
+    let body = buf("01610000000000")
+    match frame.decode(cobs.encode(body))
+        Ok(_)  => test.fail("a frame with trailing bytes decoded")
+        Err(e) => test.assert_true(str.contains(e.message(), "disagrees"),
+                                   "wrong message: ${e.message()}")
+
+@test
+fn test_an_unreadable_length_prefix_is_a_value() [io]
+    // Three continuation bytes and nothing to finish them.
+    match frame.decode(cobs.encode(buf("808080")))
+        Ok(_)  => test.fail("an unreadable prefix decoded")
+        Err(e) => test.assert_true(str.contains(e.message(), "disagrees"),
+                                   "wrong message: ${e.message()}")
+
+@test
+fn test_a_zero_inside_a_frame_is_the_cobs_layer_refusing() [io]
+    // The one byte an encoded frame cannot contain.  The refusal names
+    // the layer, because that is where a reader would look.
+    match frame.decode(buf("030001"))
+        Ok(_)  => test.fail("a frame with a zero in it decoded")
+        Err(e) => test.assert_true(str.contains(e.message(), "cobs:"),
+                                   "wrong message: ${e.message()}")
+
+@test
+fn test_an_empty_frame_is_a_value() [io]
+    match frame.decode(bytes.zeros(0))
+        Ok(_)  => test.fail("nothing at all decoded")
+        Err(e) => test.assert_true(str.contains(e.message(), "ended after 0"),
+                                   "wrong message: ${e.message()}")
+
+// ── The streaming reader ─────────────────────────────────────────────
+
+// Every payload the framer answered, as hexadecimal, with a refused
+// frame reported as `err` so a test can assert what was dropped.
+fn payloads_of(results: [Result<Bytes, FrameError>]) -> [Str] [io]
+    var out: [Str] = []
+    for r in results
+        match r
+            Ok(p)  =>
+                out = list.push(out, bytes.to_hex(p))
+            Err(_) =>
+                out = list.push(out, "err")
+    out
+
+@test
+fn test_the_framer_answers_a_frame_when_its_delimiter_arrives() [io]
+    var f = frame.framer()
+    let wire = frame.encode(buf("6869"))
+    // Everything but the delimiter: nothing is complete yet.
+    let partial = f.push(bytes.slice(wire, 0, bytes.len(wire) - 1))
+    test.assert_eq(list.len(partial), 0)
+    test.assert_eq(f.pending_len(), bytes.len(wire) - 1)
+    let done = f.push(bytes.slice(wire, bytes.len(wire) - 1, bytes.len(wire)))
+    test.assert_eq(payloads_of(done), ["6869"])
+    test.assert_eq(f.pending_len(), 0)
+
+@test
+fn test_the_framer_answers_several_frames_from_one_chunk() [io]
+    var f = frame.framer()
+    let chunk = bytes.concat([frame.encode(buf("6869")),
+                              frame.encode(bytes.zeros(0)),
+                              frame.encode(buf(payload_with_zeros()))])
+    test.assert_eq(payloads_of(f.push(chunk)), ["6869", "", payload_with_zeros()])
+
+@test
+fn test_the_framer_survives_being_fed_one_byte_at_a_time() [io]
+    // The worst chunking a link can produce: every frame split at every
+    // byte.  A receiver that only works on whole frames is not a
+    // receiver.
+    let stream = bytes.concat([frame.encode(buf("6869")),
+                               frame.encode(buf("6e6f766f2d6c616e67")),
+                               frame.encode(buf(payload_with_zeros()))])
+    var f = frame.framer()
+    var seen: [Str] = []
+    for i in 0 .. bytes.len(stream)
+        seen = list.append(seen, payloads_of(f.push(bytes.slice(stream, i, i + 1))))
+    test.assert_eq(seen, ["6869", "6e6f766f2d6c616e67", payload_with_zeros()])
+
+@test
+fn test_the_framer_resynchronises_after_a_corrupt_frame() [io]
+    // The point of a delimiter: one bad frame costs one frame, not the
+    // rest of the stream.  The bad one is reported rather than
+    // silently dropped, so a receiver can count what it lost.
+    let good = frame.encode(buf("6869"))
+    let damaged = bytes.set_u8(frame.encode(buf("6e6f766f2d6c616e67")), 4, 0x77)
+    var f = frame.framer()
+    let out = f.push(bytes.concat([good, damaged, good]))
+    test.assert_eq(payloads_of(out), ["6869", "err", "6869"])
+
+@test
+fn test_the_framer_ignores_a_run_of_delimiters() [io]
+    // An idle link that sends zeros, and a receiver that joined in the
+    // middle of a frame: neither is an error, and neither is a frame.
+    var f = frame.framer()
+    let out = f.push(bytes.concat([buf("000000"), frame.encode(buf("6869")),
+                                   buf("0000")]))
+    test.assert_eq(payloads_of(out), ["6869"])
+
+@test
+fn test_reset_throws_away_the_partial_frame() [io]
+    // What to do after a link drops: the bytes before the next
+    // delimiter are the head of something whose tail will never come.
+    var f = frame.framer()
+    let wire = frame.encode(buf("6869"))
+    let _ = f.push(bytes.slice(wire, 0, 4))
+    test.assert_eq(f.pending_len(), 4)
+    f.reset()
+    test.assert_eq(f.pending_len(), 0)
+    // The rest of the abandoned frame is refused rather than mistaken
+    // for a whole one; the frame after it still arrives.
+    let out = f.push(bytes.concat([bytes.slice(wire, 4, bytes.len(wire)), wire]))
+    test.assert_eq(payloads_of(out), ["err", "6869"])
+
+// ── Numbers inside a payload ─────────────────────────────────────────
+
+@test
+fn test_numbers_in_a_payload_round_trip() [io]
+    // Three signed numbers into a payload, the frame around them, and
+    // the same three back out.
+    var w = bytes.cursor_le(bytes.zeros(frame.int_len(0 - 1)
+                                          + frame.int_len(150)
+                                          + frame.int_len(0 - 1000000)))
+    let a = frame.put_int(w, 0 - 1)
+    let b = frame.put_int(w, 150)
+    let c = frame.put_int(w, 0 - 1000000)
+    test.assert_eq(a, frame.int_len(0 - 1))
+    test.assert_eq(b, frame.int_len(150))
+    test.assert_eq(c, frame.int_len(0 - 1000000))
+    let payload = frame.decode(frame.encode(w.finish()))!
+    var r = bytes.cursor_le(payload)
+    test.assert_eq(frame.take_int(r)!, 0 - 1)
+    test.assert_eq(frame.take_int(r)!, 150)
+    test.assert_eq(frame.take_int(r)!, 0 - 1000000)
+    test.assert_eq(r.remaining(), 0)
+
+@test
+fn test_a_small_negative_number_costs_one_byte() [io]
+    // The reason the payload helper folds before it encodes: a plain
+    // unsigned varint of -1 is ten bytes.
+    test.assert_eq(frame.int_len(0 - 1), 1)
+    test.assert_eq(frame.int_len(63), 1)
+    test.assert_eq(frame.int_len(0 - 64), 1)
+    test.assert_eq(frame.int_len(64), 2)
+
+@test
+fn test_a_payload_that_runs_out_mid_number_is_a_value() [io]
+    // The frame was whole and what it carried did not parse, which is
+    // why the fault is the varint's rather than the frame's.
+    var r = bytes.cursor_le(buf("8080"))
+    match frame.take_int(r)
+        Ok(v)  => test.fail("a truncated number decoded to ${v}")
+        Err(e) => test.assert_true(str.contains(e.message(), "unfinished"),
+                                   "wrong message: ${e.message()}")

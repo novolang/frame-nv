@@ -1,0 +1,298 @@
+// Frame — a packet on a stream that has no packets.
+//
+// What it is.  A serial link, a pipe and a TCP connection all deliver
+// bytes, in whatever sized pieces they feel like, with no mark where
+// one message ends and the next begins.  Three things put the messages
+// back:
+//
+//   a DELIMITER, so a reader can find the end of a frame without being
+//   told its length — here a `0x00` byte, made unambiguous by COBS,
+//   which removes every zero from the frame's own bytes;
+//
+//   a LENGTH, so a reader knows how much of what it found is payload —
+//   here an unsigned LEB128 varint, one byte for anything under 128;
+//
+//   a CHECK, so a reader can tell a corrupted frame from a good one —
+//   here CRC-32C over the length and the payload together, which is
+//   what catches a frame whose bytes changed but whose delimiters did
+//   not.
+//
+// The layout, before COBS runs over it and the delimiter is appended:
+//
+//     +-----------------+---------+-------------------+
+//     | LEB128(len)     | payload | CRC-32C, 4 bytes  |
+//     +-----------------+---------+-------------------+
+//     |<--------- the check covers this --->|
+//
+// What it does.  `encode` and `decode` for one frame, `max_encoded_len`
+// for the buffer to reserve, and a `Framer` that takes bytes as they
+// arrive and answers whole frames.  A corrupt frame is a value naming
+// what was wrong and where.
+//
+// How to use it.  One frame, allocating:
+//
+//     let wire = frame.encode(payload)          // delimiter included
+//     match frame.decode(wire)
+//         Ok(back) => …
+//         Err(e)   => println(e.message())
+//
+// A stream, as it arrives:
+//
+//     var f = frame.framer()
+//     for chunk in incoming
+//         for result in f.push(chunk)
+//             …
+//
+// What it costs.  Encoding is one pass for the check and one for the
+// COBS stuffing, and two allocations — the length prefix and the body
+// COBS then reads.  The body has to exist before it can be stuffed,
+// because the check covers it, so the in-place `encode_into` still
+// builds one buffer of its own; what it does not do is allocate the
+// frame, which lands in the caller's cursor.  Decoding is the mirror,
+// plus one slice for the payload.
+//
+// What it does not do.  It does not decide what the payload means, and
+// it carries no message type, no sequence number and no address — a
+// protocol that needs those puts them in the payload, where a reader
+// that does not know the protocol cannot misread them.
+
+use std.bytes
+use std.list
+use cobs
+use crc
+use leb128
+use varint
+
+// The byte that ends a frame.  COBS guarantees it appears nowhere
+// inside one, which is the whole reason the frame is COBS-encoded.
+fn delimiter() -> Int
+    0
+
+// How many bytes the check value occupies.
+fn trailer_len() -> Int
+    4
+
+// The algorithm the trailer holds: CRC-32C, the Castagnoli polynomial
+// used by iSCSI, SCTP, ext4 and Btrfs, and the one modern processors
+// have an instruction for.
+fn algorithm() -> Crc
+    crc.crc32c()
+
+// ── What can go wrong on the way in ──────────────────────────────────
+
+// What was wrong with a frame, and where.  Every one of these is a
+// property of the bytes that arrived rather than of the program that
+// read them, so every one of them is a value.
+pub enum FrameError
+    // The frame ended before its length prefix said it would.  `at` is
+    // how many bytes it actually held.
+    Truncated(at: Int)
+    // The length prefix is unreadable, or names a payload that does not
+    // match the bytes present.  `at` is the offset it disagreed at.
+    BadLength(at: Int)
+    // The trailer does not match the payload it covers: the frame's
+    // bytes changed on the way.
+    BadCrc(expected: Int, found: Int)
+    // The COBS layer refused the bytes, so the frame never became a
+    // length and a payload at all.
+    Cobs(inner: CobsError)
+
+impl Error for FrameError
+    fn message(self) -> Str
+        match self
+            Truncated(at)           => "frame: the frame ended after ${at} byte(s), before its length prefix said it would"
+            BadLength(at)           => "frame: the length prefix disagrees with the frame at offset ${at}"
+            BadCrc(expected, found) =>
+                "frame: the check value is ${expected} and the payload's is ${found} — the frame is corrupt"
+            Cobs(inner)             => "frame: ${inner.message()}"
+
+// ── Writing one ──────────────────────────────────────────────────────
+
+// The most bytes a frame carrying `payload_len` bytes can occupy,
+// delimiter included.  A payload with no zero byte in it reaches this
+// number exactly, except where the length, payload and trailer come to
+// a whole number of 254-byte COBS blocks — there the bound is one byte
+// generous, because a full block at the very end of the input stands
+// for no zero and needs no successor.
+pub fn max_encoded_len(payload_len: Int) -> Int
+    let body = leb128.encoded_len(payload_len) + payload_len + trailer_len()
+    cobs.max_encoded_len(body) + 1
+
+// `payload` framed at the cursor, delimiter included; the byte count is
+// the return.  The frame lands in the caller's buffer.
+//
+// The cursor must have `max_encoded_len(bytes.len(payload))` bytes of
+// room.  Too little is a panic, exactly as it is for `c.put_u8` and for
+// `xs[i]`: a buffer the caller sized wrong is a mistake in the program,
+// not a value the program should carry around.
+pub fn encode_into(mut dst: Cursor, payload: Bytes) -> Int
+    let start = dst.pos()
+    // The stuffed length is the cursor's own advance, so the count
+    // `cobs.encode_into` answers says nothing this line does not.
+    let _ = cobs.encode_into(dst, body_of(payload))
+    dst.put_u8(delimiter())
+    dst.pos() - start
+
+// `payload` framed as a fresh buffer of exactly the length it needed.
+pub fn encode(payload: Bytes) -> Bytes
+    var c = bytes.cursor_le(bytes.zeros(max_encoded_len(bytes.len(payload))))
+    let n = encode_into(c, payload)
+    bytes.slice(c.finish(), 0, n)
+
+// The length prefix, the payload and the check value in one buffer —
+// the bytes COBS then removes the zeros from.
+//
+// The check is taken over the prefix and the payload as two pieces
+// rather than over the assembled buffer, because a CRC's running state
+// is a number: feeding it twice costs nothing and saves reading back
+// what was just written.
+fn body_of(payload: Bytes) -> Bytes
+    let prefix = leb128.encode(bytes.len(payload))
+    let algo = algorithm()
+    let sum = algo.finish(algo.update(algo.update(algo.start(), prefix), payload))
+    var w = bytes.cursor_le(bytes.zeros(bytes.len(prefix) + bytes.len(payload)
+                                          + trailer_len()))
+    w.put_bytes(prefix)
+    w.put_bytes(payload)
+    w.put_u32(sum)
+    w.finish()
+
+// ── Reading one ──────────────────────────────────────────────────────
+
+// The payload of one frame.  `wire` is the frame's bytes with or
+// without the trailing delimiter: `encode` writes one, and a receiver
+// that split its input at each zero has already removed it, and both
+// are the same frame.
+pub fn decode(wire: Bytes) -> Result<Bytes, FrameError>
+    let body = without_delimiter(wire)
+    if bytes.len(body) == 0
+        Err(FrameError.Truncated(at: 0))
+    else
+        match cobs.decode(body)
+            Err(e)    => Err(FrameError.Cobs(inner: e))
+            Ok(plain) => payload_of(plain)
+
+// `wire` with one trailing delimiter removed, if it carries one.
+fn without_delimiter(wire: Bytes) -> Bytes
+    let n = bytes.len(wire)
+    // The default is not the delimiter, so an empty buffer falls
+    // through unchanged rather than through the slice below.
+    if n > 0 and (bytes.byte_at(wire, n - 1) ?? 1) == delimiter()
+        bytes.slice(wire, 0, n - 1)
+    else
+        wire
+
+// The payload inside an unstuffed frame, once its length prefix and its
+// trailer agree with the bytes present.
+fn payload_of(plain: Bytes) -> Result<Bytes, FrameError>
+    let total = bytes.len(plain)
+    match leb128.decode_at(plain, 0)
+        Err(_) => Err(FrameError.BadLength(at: 0))
+        Ok(d)  => sized(plain, total, d.len, d.value)
+
+// The three ways a length prefix can disagree with the frame it heads,
+// and the check that follows when it does not.
+//
+// A negative `len` is a prefix that decoded to a number at or above
+// 2^63 — the bit pattern of an enormous unsigned value, and never a
+// length any frame could carry.
+fn sized(plain: Bytes, total: Int, prefix_len: Int, len: Int) -> Result<Bytes, FrameError>
+    let covered = prefix_len + len
+    if len < 0
+        Err(FrameError.BadLength(at: 0))
+    else if covered + trailer_len() > total
+        Err(FrameError.Truncated(at: total))
+    else if covered + trailer_len() < total
+        Err(FrameError.BadLength(at: covered + trailer_len()))
+    else
+        checked(plain, prefix_len, covered)
+
+// The payload, if the trailer matches what the prefix and the payload
+// hash to.
+fn checked(plain: Bytes, prefix_len: Int, covered: Int) -> Result<Bytes, FrameError>
+    let algo = algorithm()
+    let found = algo.finish(algo.update_range(algo.start(), plain, 0, covered))
+    // In range: `sized` established that the trailer is the last four
+    // bytes of `plain`.
+    let expected = bytes.u32_le_at(plain, covered) ?? 0
+    if found != expected
+        Err(FrameError.BadCrc(expected: expected, found: found))
+    else
+        Ok(bytes.slice(plain, prefix_len, covered))
+
+// ── Reading a stream of them ─────────────────────────────────────────
+
+// A receiver that holds the bytes of a frame that has not ended yet.
+// The stream is the reason this module exists: `decode` needs a whole
+// frame, and a link delivers whatever fits in one read.
+pub struct Framer
+    var pending: Bytes
+
+// A receiver holding nothing.
+pub fn framer() -> Framer
+    Framer { pending: bytes.zeros(0) }
+
+impl Framer
+    // `chunk` added to whatever was held; the frames it completed are
+    // the return, in arrival order.
+    //
+    // A frame that does not decode is an `Err` in that list rather than
+    // a silently dropped one, so a receiver can count what it lost — and
+    // either way the next delimiter resynchronises the stream, which is
+    // what a delimiter is for.
+    fn push(mut self, chunk: Bytes) -> [Result<Bytes, FrameError>]
+        self.pending = bytes.concat([self.pending, chunk])
+        var out: [Result<Bytes, FrameError>] = []
+        // Where the frame currently being scanned began.  The scan is a
+        // walk over bytes rather than a map over elements: each
+        // delimiter ends a run whose start the previous one fixed, so
+        // one step cannot be written without the one before it.
+        var start = 0
+        for at in 0 .. bytes.len(self.pending)
+            if (bytes.byte_at(self.pending, at) ?? 1) == delimiter()
+                // Nothing between two delimiters is not a frame: it is
+                // an idle link, or the tail of one this receiver joined
+                // too late to see the start of.
+                if at > start
+                    out = list.push(out, decode(bytes.slice(self.pending, start, at)))
+                start = at + 1
+        self.pending = bytes.slice(self.pending, start, bytes.len(self.pending))
+        out
+
+    // How many bytes are held for a frame that has not ended.  A link
+    // that can be fed faster than it is delimited needs this to cap
+    // what it buffers.
+    fn pending_len(self) -> Int
+        bytes.len(self.pending)
+
+    // Throw away the partial frame.  What to do after a link drops:
+    // the bytes before the next delimiter are the head of something
+    // whose tail will never arrive.
+    fn reset(mut self)
+        self.pending = bytes.zeros(0)
+
+// ── Numbers inside a payload ─────────────────────────────────────────
+//
+// A payload is bytes, and this module neither imposes a shape on it nor
+// needs to know one.  But the common payload is a handful of integers,
+// and writing those as fixed eight-byte words spends most of a frame on
+// leading zeros — so the three calls that put a signed integer into a
+// payload, size it, and take it back out are here rather than in every
+// caller.
+
+// How many bytes `value` will occupy in a payload.
+pub fn int_len(value: Int) -> Int
+    varint.encoded_len(value)
+
+// `value` at the cursor, ZigZag-folded and LEB128-encoded, so that a
+// small negative costs one byte rather than ten; the count is the
+// return.
+pub fn put_int(mut dst: Cursor, value: Int) -> Int
+    varint.encode_into(dst, value)
+
+// The signed integer at the cursor, leaving the cursor after it.  The
+// fault is a `VarintError` rather than a `FrameError` because a
+// payload's contents are the caller's protocol, not this frame's: the
+// frame was whole, and what it carried did not parse.
+pub fn take_int(mut src: Cursor) -> Result<Int, VarintError>
+    varint.decode_from(src)

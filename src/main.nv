@@ -1,0 +1,8 @@
+// frame-nv main — a library package, so there is no program here.
+//
+// A manifest names an entry point whether or not anything runs it, and
+// a dependency's entry point is never built.  This file exists to be
+// that name and to say what to do instead.
+
+fn main() [io]
+    println("frame-nv: a library — depend on it and `use frame`")

@@ -1,0 +1,27 @@
+[package]
+name        = "frame-nv"
+version     = "0.1.0"
+description = "A framed packet for a byte stream that has no message boundaries: a varint length prefix, the payload, a CRC-32C trailer over both, and the whole thing COBS-encoded so a zero byte can end the frame.  Ships a streaming reader that takes bytes as they arrive and answers whole frames, and reports a corrupt one as a positioned value."
+license     = "Apache-2.0"
+stability   = "experimental"
+keywords    = ["framing", "cobs", "crc32c", "serial", "protocol"]
+main        = "src/main.nv"
+
+# The README is the package's one page, and its own first heading is the
+# package name — which says nothing in a list of this package's pages.
+[docs.pages]
+"README.md" = "Framing packets on a stream with no message boundaries"
+
+[dependencies]
+# Each layer of the frame, as its own package.
+#
+# `leb128-nv` is `^0.1.1` rather than `^0.1.0` because the decoder needs
+# `decode_at`, which answers a length prefix AND the bytes it occupied
+# in one call; 0.1.0 had no way to ask.  Everything else is the widest
+# range this package supports.  `varint-nv` reaches `leb128-nv` too, at
+# `^0.1.0` — one version of it is built, and it is the highest that
+# satisfies both.
+cobs-nv   = "^0.1.0"
+crc-nv    = "^0.1.0"
+varint-nv = "^0.1.0"
+leb128-nv = "^0.1.1"
