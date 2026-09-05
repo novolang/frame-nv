@@ -4,7 +4,10 @@ version     = "0.1.0"
 description = "A framed packet for a byte stream that has no message boundaries: a varint length prefix, the payload, a CRC-32C trailer over both, and the whole thing COBS-encoded so a zero byte can end the frame.  Ships a streaming reader that takes bytes as they arrive and answers whole frames, and reports a corrupt one as a positioned value."
 license     = "Apache-2.0"
 stability   = "experimental"
-keywords    = ["framing", "cobs", "crc32c", "serial", "protocol"]
+category    = "encoding"
+tags        = ["framing", "cobs", "crc32c", "serial", "protocol"]
+repository  = "https://github.com/novolang/frame-nv"
+maintainers = ["novo-lang"]
 main        = "src/main.nv"
 
 # The README is the package's one page, and its own first heading is the
