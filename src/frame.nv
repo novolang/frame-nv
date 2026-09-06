@@ -29,19 +29,11 @@
 // arrive and answers whole frames.  A corrupt frame is a value naming
 // what was wrong and where.
 //
-// How to use it.  One frame, allocating:
-//
-//     let wire = frame.encode(payload)          // delimiter included
-//     match frame.decode(wire)
-//         Ok(back) => …
-//         Err(e)   => println(e.message())
-//
-// A stream, as it arrives:
-//
-//     var f = frame.framer()
-//     for chunk in incoming
-//         for result in f.push(chunk)
-//             …
+// How to use it.  `encode` and `decode` handle one whole frame;
+// `framer` takes bytes as they arrive off a link and answers the frames
+// they completed.  `put_int` and `take_int` are there for the common
+// payload, which is a handful of integers.  Each carries a worked
+// example below.
 //
 // What it costs.  Encoding is one pass for the check and one for the
 // COBS stuffing, and two allocations — the length prefix and the body
@@ -80,9 +72,14 @@ fn algorithm() -> Crc
 
 // ── What can go wrong on the way in ──────────────────────────────────
 
-// What was wrong with a frame, and where.  Every one of these is a
-// property of the bytes that arrived rather than of the program that
-// read them, so every one of them is a value.
+// What was wrong with a frame, and where.
+//
+// Every one of these is a property of the bytes that arrived rather
+// than of the program that read them, so every one of them is a value:
+// a receiver counts them, logs them, and reads the next frame.  Which
+// variant it is says which layer refused — `Cobs` means the bytes never
+// became a length and a payload, `BadCrc` means they did and then
+// disagreed with their own check.  `decode` carries the worked example.
 pub enum FrameError
     // The frame ended before its length prefix said it would.  `at` is
     // how many bytes it actually held.
@@ -97,7 +94,13 @@ pub enum FrameError
     // length and a payload at all.
     Cobs(inner: CobsError)
 
+// The standard `Error` implementation, so a bad frame can be reported
+// by anything that reports errors.
 impl Error for FrameError
+    // Answer the one-line report: which layer refused the frame, and
+    // where.  A `Cobs` fault carries the COBS message inside its own,
+    // so a reader sees the whole chain in one line rather than having
+    // to unwrap to find out what actually happened.
     fn message(self) -> Str
         match self
             Truncated(at)           => "frame: the frame ended after ${at} byte(s), before its length prefix said it would"
@@ -108,23 +111,51 @@ impl Error for FrameError
 
 // ── Writing one ──────────────────────────────────────────────────────
 
-// The most bytes a frame carrying `payload_len` bytes can occupy,
-// delimiter included.  A payload with no zero byte in it reaches this
-// number exactly, except where the length, payload and trailer come to
-// a whole number of 254-byte COBS blocks — there the bound is one byte
-// generous, because a full block at the very end of the input stands
-// for no zero and needs no successor.
+// Answer the most bytes a frame carrying `payload_len` bytes can
+// occupy, delimiter included.
+//
+// The number to reserve before encoding, and the number a link's
+// buffer has to be able to hold.  A payload with no zero byte in it
+// reaches it exactly, except where the length, payload and trailer come
+// to a whole number of 254-byte COBS blocks — there the bound is one
+// byte generous, because a full block at the very end of the input
+// stands for no zero and needs no successor.
+//
+// ```novo
+// // A short payload costs its own length plus the prefix, the check,
+// // the COBS header and the delimiter.
+// println("${frame.max_encoded_len(0)} ${frame.max_encoded_len(8)}")   // 7 15
+// ```
 pub fn max_encoded_len(payload_len: Int) -> Int
     let body = leb128.encoded_len(payload_len) + payload_len + trailer_len()
     cobs.max_encoded_len(body) + 1
 
-// `payload` framed at the cursor, delimiter included; the byte count is
-// the return.  The frame lands in the caller's buffer.
+// Frame `payload` at the cursor, delimiter included, and answer the
+// byte count.  The frame lands in the caller's buffer.
 //
 // The cursor must have `max_encoded_len(bytes.len(payload))` bytes of
 // room.  Too little is a panic, exactly as it is for `c.put_u8` and for
 // `xs[i]`: a buffer the caller sized wrong is a mistake in the program,
 // not a value the program should carry around.
+//
+// It still allocates one buffer of its own — the length, payload and
+// check have to exist before COBS can stuff them, because the check
+// covers them.  What it does not allocate is the frame, which is the
+// one that goes on the wire.
+//
+// ```novo
+// use std.bytes
+//
+// // Two frames back to back in a buffer the caller owns.
+// let a = bytes.from_str("hi")
+// var out = bytes.cursor_le(bytes.zeros(2 * frame.max_encoded_len(2)))
+// let n = frame.encode_into(out, a) + frame.encode_into(out, a)
+// println("${n}")   // 18
+//
+// // Each ends with the delimiter, and neither contains one.
+// var f = frame.framer()
+// println("${list.len(f.push(bytes.slice(out.finish(), 0, n)))}")   // 2
+// ```
 pub fn encode_into(mut dst: Cursor, payload: Bytes) -> Int
     let start = dst.pos()
     // The stuffed length is the cursor's own advance, so the count
@@ -133,7 +164,28 @@ pub fn encode_into(mut dst: Cursor, payload: Bytes) -> Int
     dst.put_u8(delimiter())
     dst.pos() - start
 
-// `payload` framed as a fresh buffer of exactly the length it needed.
+// Frame `payload` into a fresh buffer of exactly the length it needed,
+// delimiter included.
+//
+// The form for a caller sending one message.  The answer contains no
+// `0x00` except the delimiter at its end — that is what COBS is for —
+// so it can be written straight onto a link that separates frames by
+// zero.  `decode` inverts it exactly, for every payload including the
+// empty one.
+//
+// ```novo
+// use std.bytes
+//
+// // A payload with a zero in it: the frame has none until the end.
+// let payload = bytes.from_hex("11002233") ?? bytes.zeros(0)
+// println(bytes.to_hex(frame.encode(payload)))
+// // 030411072233a9ba6bea00 — one 00, at the very end
+//
+// // The round trip, which is what a caller depends on.
+// match frame.decode(frame.encode(payload))
+//     Ok(back) => println(bytes.to_hex(back))   // 11002233
+//     Err(e)   => println(e.message())
+// ```
 pub fn encode(payload: Bytes) -> Bytes
     var c = bytes.cursor_le(bytes.zeros(max_encoded_len(bytes.len(payload))))
     let n = encode_into(c, payload)
@@ -159,10 +211,34 @@ fn body_of(payload: Bytes) -> Bytes
 
 // ── Reading one ──────────────────────────────────────────────────────
 
-// The payload of one frame.  `wire` is the frame's bytes with or
-// without the trailing delimiter: `encode` writes one, and a receiver
-// that split its input at each zero has already removed it, and both
-// are the same frame.
+// Read the payload out of one frame.
+//
+// `wire` is the frame's bytes with or without the trailing delimiter:
+// `encode` writes one, a receiver that split its input at each zero has
+// already removed it, and both are the same frame.  What it will not
+// take is two frames — this decodes one, and `Framer.push` is what
+// splits a stream.
+//
+// Every fault is an `Err` naming the layer that refused and where,
+// never a panic: the whole point of a check value is that a receiver
+// keeps going.
+//
+// ```novo
+// use std.bytes
+//
+// let wire = frame.encode(bytes.from_str("hello"))
+// match frame.decode(wire)
+//     Ok(p)  => println(bytes.to_str(p))    // hello
+//     Err(e) => println(e.message())
+//
+// // One flipped byte in the payload: the check catches it and says so.
+// var broken = bytes.cursor_le(wire)
+// broken.seek(3)
+// broken.put_u8(0x68)
+// match frame.decode(broken.finish())
+//     Ok(p)  => println(bytes.to_str(p))
+//     Err(e) => println(e.message())        // frame: the check value is … corrupt
+// ```
 pub fn decode(wire: Bytes) -> Result<Bytes, FrameError>
     let body = without_delimiter(wire)
     if bytes.len(body) == 0
@@ -223,23 +299,60 @@ fn checked(plain: Bytes, prefix_len: Int, covered: Int) -> Result<Bytes, FrameEr
 // ── Reading a stream of them ─────────────────────────────────────────
 
 // A receiver that holds the bytes of a frame that has not ended yet.
+//
 // The stream is the reason this module exists: `decode` needs a whole
-// frame, and a link delivers whatever fits in one read.
+// frame, and a link delivers whatever fits in one read.  A `Framer`
+// holds the tail that has not been delimited yet and nothing else, so
+// it costs the size of one partial frame.  `framer()` answers a fresh
+// one; `push` is where the work happens.
 pub struct Framer
     var pending: Bytes
 
-// A receiver holding nothing.
+// Build a receiver holding nothing.
+//
+// It carries no configuration — a frame's shape is fixed by the format
+// — so two framers differ only in what they have been fed.  Feed it
+// with `push` and read what comes back.
+//
+// ```novo
+// use std.bytes
+//
+// // A link delivering a frame in two pieces, and a second frame with it.
+// let wire = bytes.concat([frame.encode(bytes.from_str("one")),
+//                          frame.encode(bytes.from_str("two"))])
+// var f = frame.framer()
+// println("${list.len(f.push(bytes.slice(wire, 0, 5)))}")   // 0, nothing ended yet
+// for r in f.push(bytes.slice(wire, 5, bytes.len(wire)))
+//     match r
+//         Ok(p)  => println(bytes.to_str(p))   // one, then two
+//         Err(e) => println(e.message())
+// ```
 pub fn framer() -> Framer
     Framer { pending: bytes.zeros(0) }
 
 impl Framer
-    // `chunk` added to whatever was held; the frames it completed are
-    // the return, in arrival order.
+    // Add `chunk` to whatever was held, and answer the frames it
+    // completed, in arrival order.
     //
-    // A frame that does not decode is an `Err` in that list rather than
-    // a silently dropped one, so a receiver can count what it lost — and
-    // either way the next delimiter resynchronises the stream, which is
-    // what a delimiter is for.
+    // An empty list is the normal answer to a chunk that did not finish
+    // a frame; the bytes are kept.  A frame that does not decode is an
+    // `Err` in the list rather than a silently dropped one, so a
+    // receiver can count what it lost — and either way the next
+    // delimiter resynchronises the stream, which is what a delimiter is
+    // for.  Nothing here caps what is held, so a link that can be fed
+    // faster than it is delimited should watch `pending_len`.
+    //
+    // ```novo
+    // use std.bytes
+    //
+    // // A frame arriving one byte at a time answers on its last byte.
+    // let wire = frame.encode(bytes.from_str("hi"))
+    // var f = frame.framer()
+    // var done = 0
+    // for i in 0 .. bytes.len(wire)
+    //     done = done + list.len(f.push(bytes.slice(wire, i, i + 1)))
+    // println("${done}")   // 1
+    // ```
     fn push(mut self, chunk: Bytes) -> [Result<Bytes, FrameError>]
         self.pending = bytes.concat([self.pending, chunk])
         var out: [Result<Bytes, FrameError>] = []
@@ -259,15 +372,36 @@ impl Framer
         self.pending = bytes.slice(self.pending, start, bytes.len(self.pending))
         out
 
-    // How many bytes are held for a frame that has not ended.  A link
-    // that can be fed faster than it is delimited needs this to cap
-    // what it buffers.
+    // Answer how many bytes are held for a frame that has not ended.
+    //
+    // A link that can be fed faster than it is delimited needs this to
+    // cap what it buffers: nothing in here refuses a chunk, so a sender
+    // that never writes a delimiter would otherwise grow the buffer
+    // without limit.  Zero right after a `push` that ended on a
+    // delimiter, which is how a receiver knows it is between frames.
+    //
+    // ```novo
+    // use std.bytes
+    //
+    // let wire = frame.encode(bytes.from_str("hi"))
+    // var f = frame.framer()
+    // let _ = f.push(bytes.slice(wire, 0, 4))
+    // println("${f.pending_len()}")   // 4, a frame in progress
+    //
+    // let _ = f.push(bytes.slice(wire, 4, bytes.len(wire)))
+    // println("${f.pending_len()}")   // 0, between frames
+    // ```
     fn pending_len(self) -> Int
         bytes.len(self.pending)
 
-    // Throw away the partial frame.  What to do after a link drops:
-    // the bytes before the next delimiter are the head of something
-    // whose tail will never arrive.
+    // Throw away the partial frame.
+    //
+    // What to do after a link drops: the bytes before the next
+    // delimiter are the head of something whose tail will never
+    // arrive.  It is also how a receiver enforces its own buffer cap,
+    // after `pending_len` says the sender has gone too long without a
+    // delimiter.  Frames already answered by `push` are unaffected —
+    // this holds nothing else.
     fn reset(mut self)
         self.pending = bytes.zeros(0)
 
@@ -280,19 +414,50 @@ impl Framer
 // payload, size it, and take it back out are here rather than in every
 // caller.
 
-// How many bytes `value` will occupy in a payload.
+// Answer how many bytes `value` will occupy in a payload.
+//
+// The number to add up when sizing a payload buffer before writing it.
+// Magnitude decides, not sign: `-1` and `1` are both one byte.
+//
+// ```novo
+// println("${frame.int_len(0 - 1)} ${frame.int_len(1)}")   // 1 1
+// println("${frame.int_len(1000000)}")                     // 3
+// ```
 pub fn int_len(value: Int) -> Int
     varint.encoded_len(value)
 
-// `value` at the cursor, ZigZag-folded and LEB128-encoded, so that a
-// small negative costs one byte rather than ten; the count is the
-// return.
+// Write `value` at the cursor, ZigZag-folded and LEB128-encoded, and
+// answer the byte count.
+//
+// A small negative costs one byte rather than the ten a fixed word
+// would spend, which is the whole reason this is here rather than left
+// to the caller.  The cursor is the payload's, not the frame's: these
+// three go inside a payload, and the frame is built from the result.
+//
+// ```novo
+// use std.bytes
+//
+// // A payload of three numbers, framed and read back.
+// var w = bytes.cursor_le(bytes.zeros(3 * frame.int_len(0 - 1) + 8))
+// let n = frame.put_int(w, 0 - 1) + frame.put_int(w, 300) + frame.put_int(w, 7)
+// let wire = frame.encode(bytes.slice(w.finish(), 0, n))
+//
+// match frame.decode(wire)
+//     Err(e) => println(e.message())
+//     Ok(p)  =>
+//         var r = bytes.cursor_le(p)
+//         println("${frame.take_int(r)!} ${frame.take_int(r)!} ${frame.take_int(r)!}")
+//         // -1 300 7
+// ```
 pub fn put_int(mut dst: Cursor, value: Int) -> Int
     varint.encode_into(dst, value)
 
-// The signed integer at the cursor, leaving the cursor after it.  The
-// fault is a `VarintError` rather than a `FrameError` because a
+// Read the signed integer at the cursor, leaving the cursor after it.
+//
+// The fault is a `VarintError` rather than a `FrameError` because a
 // payload's contents are the caller's protocol, not this frame's: the
-// frame was whole, and what it carried did not parse.
+// frame was whole, and what it carried did not parse.  The cursor's
+// position after a read is where the next number starts, so a payload
+// of several is read by calling again.  See `put_int` for the example.
 pub fn take_int(mut src: Cursor) -> Result<Int, VarintError>
     varint.decode_from(src)

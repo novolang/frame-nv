@@ -84,17 +84,23 @@ delimited: a receiver that must cap its buffering asks, and calls
 
 ## What can go wrong, and what you are told
 
-`FrameError` has four variants and every one is a property of the bytes
-that arrived rather than of the program that read them:
+Every fault a frame can have is a property of the bytes that arrived
+rather than of the program that read them, so every one is a value:
+`decode` and `Framer.push` answer an `Err`, and the receiver counts it
+and reads the next frame. Nothing here panics on input.
 
-| Variant | Means |
-|---|---|
-| `Truncated(at)` | the frame ended before its length prefix said it would; `at` is how many bytes it held |
-| `BadLength(at)` | the prefix is unreadable, or names a payload that does not match the bytes present |
-| `BadCrc(expected, found)` | the frame's bytes changed on the way |
-| `Cobs(inner)` | the stuffing layer refused the bytes, so the frame never became a length and a payload at all |
+Which variant it is tells you **which layer refused**, which is the
+part worth knowing: the stuffing refused the bytes so they never became
+a length and a payload at all, or they did and the length disagreed
+with what was there, or they did and the check value disagreed with the
+payload. The last of those is the one that means corruption in transit;
+the others usually mean the receiver started reading mid-stream.
+`e.message()` says which, and where — the variants and their fields are
+on [the package's page](https://novo-lang.org/packages/frame-nv).
 
-`e.message()` says which, and where.
+Either way the next delimiter resynchronises the stream. That is what a
+delimiter is for, and it is why a `Framer` keeps going after a bad
+frame instead of giving up on the link.
 
 ## Numbers inside a payload
 

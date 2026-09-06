@@ -4,6 +4,29 @@ Newest first.  Below `1.0.0` a breaking change bumps the **minor**
 number and a compatible one the **patch**; see [Version numbers in the
 Orbit package registry](https://novo-lang.org/docs/registry/semver.html).
 
+## 0.1.3
+
+Documentation: the reference is generated from the code, and the
+examples in it are doctests.  No code changed — every byte on the wire
+is what 0.1.2 produced, and all four dependency ranges are unchanged.
+
+- **Every `pub` item is documented under Go's rule**, the comment block
+  directly above the declaration, its first sentence the summary a
+  reader meets before opening anything.  The methods on `Framer` and
+  `FrameError.message` carry their own.  `novo doc` turns the lot into
+  [the package's page](https://novo-lang.org/packages/frame-nv).
+- **Nine worked examples, and they run.**  A frame with a zero in its
+  payload is written out in hex with its single trailing delimiter, a
+  flipped byte is shown being caught by the check, a frame arriving one
+  byte at a time is shown answering on its last, and three integers go
+  into a payload and come back out.  A fenced `novo` block in a
+  documentation comment is compiled by `novo doc` and run by
+  `novo test src/frame.nv`.
+- **The README's `FrameError` table is gone.**  The variants and their
+  fields are on the generated page now; the README keeps the part a
+  generator cannot say — which layer refusing means what, and why the
+  next delimiter resynchronises the stream.
+
 ## 0.1.2
 
 Developed in its own repository from this version.  `novolang/frame-nv` is
