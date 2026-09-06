@@ -50,19 +50,11 @@ Three things, each doing one job:
 
 ## What it gives you
 
-| Function | |
-|---|---|
-| `frame.max_encoded_len(payload_len: Int) -> Int` | the buffer to reserve for a payload of that size |
-| `frame.encode_into(dst: Cursor, payload: Bytes) -> Int` | one frame at the cursor, delimiter included; the byte count is the return |
-| `frame.encode(payload: Bytes) -> Bytes` | a fresh buffer of exactly the length it needed |
-| `frame.decode(wire: Bytes) -> Result<Bytes, FrameError>` | the payload of one frame, with or without its delimiter |
-| `frame.framer() -> Framer` | a receiver for bytes as they arrive |
-| `f.push(chunk: Bytes) -> [Result<Bytes, FrameError>]` | the frames that chunk completed |
-| `f.pending_len() -> Int` | how many bytes are held for a frame that has not ended |
-| `f.reset()` | throw away the partial frame |
-| `frame.int_len(value: Int) -> Int` | how many bytes a signed integer takes in a payload |
-| `frame.put_int(dst: Cursor, value: Int) -> Int` | a signed integer into a payload, ZigZag-folded |
-| `frame.take_int(src: Cursor) -> Result<Int, VarintError>` | the signed integer at the cursor |
+The API is on [the package's page](https://novo-lang.org/packages/frame-nv),
+generated from these sources: every `pub` declaration with its signature,
+its effect row and the comment block written above it. A table of names
+here would be a second original, and the second original is the one that
+goes stale.
 
 ## Reading a stream
 
@@ -180,12 +172,15 @@ frame, not the link layer above it. No encryption and no authentication
 
 ## Dependencies
 
-| Package | Range | Why |
-|---|---|---|
-| [`cobs-nv`](https://novo-lang.org/packages) | `^0.1.0` | the stuffing that makes a zero byte a delimiter |
-| [`crc-nv`](https://novo-lang.org/packages) | `^0.1.0` | CRC-32C, taken over the prefix and payload as two pieces |
-| [`varint-nv`](https://novo-lang.org/packages) | `^0.1.0` | the signed integers `put_int` and `take_int` spend |
-| [`leb128-nv`](https://novo-lang.org/packages) | `^0.1.1` | the unsigned length prefix |
+It depends on [`cobs-nv`](https://novo-lang.org/packages/cobs-nv) for the
+stuffing that makes a zero byte a delimiter,
+[`crc-nv`](https://novo-lang.org/packages/crc-nv) for CRC-32C over the
+prefix and payload, [`varint-nv`](https://novo-lang.org/packages/varint-nv)
+for the signed integers `put_int` and `take_int` spend, and
+[`leb128-nv`](https://novo-lang.org/packages/leb128-nv) for the unsigned
+length prefix. The ranges are on
+[the package's page](https://novo-lang.org/packages/frame-nv), read from
+this manifest, with the whole closure folded under them.
 
 `leb128-nv` is `^0.1.1` rather than `^0.1.0` because the decoder needs
 `decode_at`, which answers a length prefix **and** the number of bytes it
