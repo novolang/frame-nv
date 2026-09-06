@@ -4,6 +4,17 @@ Newest first.  Below `1.0.0` a breaking change bumps the **minor**
 number and a compatible one the **patch**; see [Version numbers in the
 Orbit package registry](https://novo-lang.org/docs/registry/semver.html).
 
+## 0.1.2
+
+Developed in its own repository from this version.  `novolang/frame-nv` is
+where the sources live, where CI runs and where releases are tagged;
+the novo-lang monorepo no longer carries a copy.  No code changed —
+every signature and every byte on the wire is what 0.1.1 shipped.
+
+- **`LICENSE` ships with the package.**  It is on the publish
+  allow-list, so the tarball now carries the Apache-2.0 text rather
+  than only naming it in the manifest.
+
 ## 0.1.1
 
 A patch: the same frames, byte for byte.  The hand-computed fixtures,
