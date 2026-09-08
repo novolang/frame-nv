@@ -44,7 +44,7 @@ fn buf(hex: Str) -> Bytes
 // extra byte on top.
 fn zero_free(n: Int) -> Bytes
     var c = bytes.cursor_le(bytes.zeros(n))
-    for i in 0 .. n
+    for i in 0..n
         c.put_u8(1 + i % 254)
     c.finish()
 
@@ -71,7 +71,7 @@ fn test_round_trip_over_every_length_up_to_300() [io]
     // Past 254 the COBS layer opens a second block, and past 127 the
     // length prefix takes a second byte; both boundaries are inside
     // this range.
-    for n in 0 .. 301
+    for n in 0..301
         test.case("length ${n}")
         let payload = zero_free(n)
         test.assert_eq(bytes.to_hex(frame.decode(frame.encode(payload))!),
@@ -81,7 +81,7 @@ fn test_round_trip_over_every_length_up_to_300() [io]
 fn test_round_trip_over_an_all_zero_payload() [io]
     // The other extreme: every byte is the delimiter, so every byte
     // becomes a block header and none of them reaches the wire.
-    for n in 0 .. 301
+    for n in 0..301
         test.case("length ${n}")
         let payload = bytes.zeros(n)
         test.assert_eq(bytes.len(frame.decode(frame.encode(payload))!), n)
@@ -90,11 +90,11 @@ fn test_round_trip_over_an_all_zero_payload() [io]
 fn test_a_frame_carries_no_zero_before_its_delimiter() [io]
     // The property the whole design rests on: if a zero could occur
     // inside a frame, the delimiter would end frames in the middle.
-    for n in 0 .. 300
+    for n in 0..300
         test.case("length ${n}")
         let wire = frame.encode(bytes.zeros(n))
         var zeros = 0
-        for i in 0 .. bytes.len(wire) - 1
+        for i in 0..bytes.len(wire) - 1
             if (bytes.byte_at(wire, i) ?? 1) == 0
                 zeros = zeros + 1
         test.assert_eq(zeros, 0)
@@ -107,7 +107,7 @@ fn test_max_encoded_len_is_never_exceeded_and_is_tight() [io]
     // asserted too.  That distance is zero everywhere except where the
     // body is a whole number of 254-byte COBS blocks, where the bound
     // reserves one byte the encoder does not need.
-    for n in 0 .. 300
+    for n in 0..300
         test.case("length ${n}")
         let worst = bytes.len(frame.encode(zero_free(n)))
         let bound = frame.max_encoded_len(n)
@@ -238,7 +238,7 @@ fn test_the_framer_survives_being_fed_one_byte_at_a_time() [io]
                                frame.encode(buf(payload_with_zeros()))])
     var f = frame.framer()
     var seen: [Str] = []
-    for i in 0 .. bytes.len(stream)
+    for i in 0..bytes.len(stream)
         seen = list.append(seen, payloads_of(f.push(bytes.slice(stream, i, i + 1))))
     test.assert_eq(seen, ["6869", "6e6f766f2d6c616e67", payload_with_zeros()])
 

@@ -361,7 +361,7 @@ impl Framer
         // delimiter ends a run whose start the previous one fixed, so
         // one step cannot be written without the one before it.
         var start = 0
-        for at in 0 .. bytes.len(self.pending)
+        for at in 0..bytes.len(self.pending)
             if (bytes.byte_at(self.pending, at) ?? 1) == delimiter()
                 // Nothing between two delimiters is not a frame: it is
                 // an idle link, or the tail of one this receiver joined
