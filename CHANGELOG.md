@@ -7,6 +7,7 @@ Orbit package registry](https://novo-lang.org/docs/registry/semver.html).
 ## 0.1.4 — 2026-09-08
 
 - **Declares its layer**: `layer = "core"` in the manifest — the public API requires no effects, and `novo pkg publish` now checks the code against that budget.  No code changed.  The layers are described under Design in the [publishing guide](https://novo-lang.org/docs/publishing.html#design).
+- **Sources reformatted to the canonical form** `novo fmt` prints today (spacing and alignment only; no code changed).
 
 ## 0.1.3
 
