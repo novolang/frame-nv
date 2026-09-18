@@ -1,30 +1,24 @@
-> Developed and published from this repository.  `frame-nv` began under
-> `orbit/frame-nv` in the [novo-lang](https://github.com/novolang) monorepo
-> and graduated out of it with its history; issues and pull requests
-> belong here.
-
 # frame-nv
 
-A packet on a stream that has no packets. A serial link, a pipe and a
-TCP connection all deliver bytes, in whatever sized pieces they feel
-like, with no mark where one message ends and the next begins. This
-package puts the messages back.
+A byte stream has no message boundaries. A serial link, a pipe and a TCP
+connection all deliver bytes, in whatever sized pieces they choose, with
+no mark where one message ends and the next begins. A frame is one
+message on such a stream, wrapped so that a reader can find where it
+ends and can tell a corrupted one from a good one. This package writes
+and reads that frame.
 
-```novo
-use frame
+The frame is built from three published formats. Consistent Overhead
+Byte Stuffing removes every zero byte from a run of data, and is
+described by Cheshire and Baker in "Consistent Overhead Byte Stuffing",
+IEEE/ACM Transactions on Networking, volume 7 number 2. CRC-32C is the
+cyclic redundancy check over the Castagnoli polynomial, defined in RFC
+3720 appendix B. LEB128 is the unsigned little-endian base 128 varint of
+the DWARF debugging format, section 7.6.
 
-fn main() [io]
-    let wire = frame.encode(payload)          // delimiter included
-    match frame.decode(wire)
-        Ok(back) => println("${bytes.len(back)} bytes")
-        Err(e)   => println(e.message())
-```
+## What a frame is
 
-```
-novo pkg add frame-nv
-```
-
-## The frame
+This is the layout, before the stuffing runs over it and the delimiter
+is appended.
 
 ```
 +-------------+---------+------------------+
@@ -35,170 +29,188 @@ novo pkg add frame-nv
         …then COBS over all of it, then 0x00
 ```
 
-Three things, each doing one job:
+Three parts, each answering one question.
 
-- **A delimiter** — `0x00` — so a reader can find the end of a frame
-  without being told its length. It works because COBS removes every
-  zero from the frame's own bytes, which is why the stuffing is here and
-  not optional.
-- **A length** — an unsigned LEB128 varint, one byte for anything under
-  128 — so a reader knows how much of what it found is payload.
-- **A check** — CRC-32C over the length and the payload together — so a
-  reader can tell a corrupted frame from a good one. This is the part a
-  delimiter and a length cannot do: a frame whose bytes changed in
-  transit is still a well-formed frame.
+A **delimiter** is the byte that ends a frame. Here it is `0x00`. It
+lets a reader find the end of a frame without being told the length
+first. It is unambiguous because COBS removes every zero from the
+frame's own bytes, so the only zero on the wire is the one that ends a
+frame.
 
-## What it gives you
+A **length** is the count of payload bytes. Here it is an unsigned
+LEB128 varint, which is one byte for any count below 128. It lets a
+reader know how much of what it found is payload.
 
-The API is on [the package's page](https://novo-lang.org/packages/frame-nv),
-generated from these sources: every `pub` declaration with its signature,
-its effect row and the comment block written above it. A table of names
-here would be a second original, and the second original is the one that
-goes stale.
+A **check** is a value computed over the bytes it covers. Here it is
+CRC-32C over the length prefix and the payload together. It lets a
+reader tell a corrupted frame from a good one. A frame whose bytes
+changed in transit is still a well-formed frame, so this is the fault a
+delimiter and a length cannot catch.
 
-## Reading a stream
+| Quantity | Value |
+| --- | --- |
+| Delimiter | `0x00`, one byte |
+| Length prefix | unsigned LEB128, one byte below 128 |
+| Check value | CRC-32C, 4 bytes, little-endian |
+| Bytes the check covers | the length prefix and the payload |
+| Most bytes a frame occupies | `frame.max_encoded_len(payload_len)` |
+| Zero bytes in a frame before its delimiter | 0 |
+| Fixed cost of a frame carrying nothing | 7 bytes |
 
-`decode` needs a whole frame, and a link delivers whatever fits in one
-read. `Framer` holds the difference:
+## Install
 
-```novo
-use frame
-
-fn receive(chunks: [Bytes]) [io]
-    var f = frame.framer()
-    for chunk in chunks
-        for result in f.push(chunk)
-            match result
-                Ok(payload) => handle(payload)
-                Err(e)      => println("dropped a frame: ${e.message()}")
+```
+novo pkg add frame-nv
 ```
 
-A frame that does not decode arrives as an `Err` in that list rather
-than being silently dropped, so a receiver can count what it lost. Either
-way the next delimiter resynchronises the stream — one bad frame costs
-one frame, which is the whole point of having a delimiter.
-
-`pending_len` is there for a link that can be fed faster than it is
-delimited: a receiver that must cap its buffering asks, and calls
-`reset` when the answer is too large or when the link drops.
-
-## What can go wrong, and what you are told
-
-Every fault a frame can have is a property of the bytes that arrived
-rather than of the program that read them, so every one is a value:
-`decode` and `Framer.push` answer an `Err`, and the receiver counts it
-and reads the next frame. Nothing here panics on input.
-
-Which variant it is tells you **which layer refused**, which is the
-part worth knowing: the stuffing refused the bytes so they never became
-a length and a payload at all, or they did and the length disagreed
-with what was there, or they did and the check value disagreed with the
-payload. The last of those is the one that means corruption in transit;
-the others usually mean the receiver started reading mid-stream.
-`e.message()` says which, and where — the variants and their fields are
-on [the package's page](https://novo-lang.org/packages/frame-nv).
-
-Either way the next delimiter resynchronises the stream. That is what a
-delimiter is for, and it is why a `Framer` keeps going after a bad
-frame instead of giving up on the link.
-
-## Numbers inside a payload
-
-A payload is bytes, and this package neither imposes a shape on it nor
-needs to know one. But the common payload is a handful of integers, and
-writing those as fixed eight-byte words spends most of a frame on
-leading zeros — so the three calls that put a signed integer in, size it,
-and take it back out are here:
+## Example
 
 ```novo
 use std.bytes
 use frame
 
-fn reading(sensor: Int, celsius: Int) -> Bytes
-    var w = bytes.cursor_le(bytes.zeros(frame.int_len(sensor)
-                                          + frame.int_len(celsius)))
-    let _ = frame.put_int(w, sensor)
-    let _ = frame.put_int(w, celsius)
-    frame.encode(w.finish())
+fn main() [io]
+    // A payload with a zero byte in it.
+    let payload = bytes.from_hex("11002233") ?? bytes.zeros(0)
+
+    // The frame, delimiter included. It holds one zero, at the end.
+    let wire = frame.encode(payload)
+    println(bytes.to_hex(wire))   // 030411072233a9ba6bea00
+
+    // The payload back, or the reason the frame was refused.
+    match frame.decode(wire)
+        Ok(back) => println(bytes.to_hex(back))   // 11002233
+        Err(e)   => println(e.message())
 ```
 
-`-1` costs one byte rather than the ten a plain unsigned varint would
-spend on it, because the value is ZigZag-folded first. `take_int`
-answers a `VarintError` rather than a `FrameError`: the frame was whole,
-and what it carried did not parse — those are two different faults and a
-receiver treats them differently.
+## What the package contains
 
-## Writing into a buffer you already hold
+| Module | Contents |
+| --- | --- |
+| `frame` | The whole package. `max_encoded_len`, `encode` and `encode_into`, `decode`, the four `FrameError` variants, the `Framer` streaming reader with `push`, `pending_len` and `reset`, and the `int_len`, `put_int` and `take_int` calls for integers inside a payload. |
 
-`encode_into` takes a cursor and puts the frame in the caller's buffer.
-The offset lives in the cursor rather than in a third parameter because
-a `Bytes` passed as a parameter is borrowed — the caller still holds it,
-so a write through it lands in a copy the caller never sees. A cursor
-owns its buffer, so a write through one lands where the caller can read
-it. That is the same rule the standard library's own writers follow.
+Every `pub` declaration, with its signature, its effect row and its
+documentation, is on [the package's
+page](https://novo-lang.org/packages/frame-nv), generated from these
+sources.
 
-```novo
-var out = bytes.cursor_le(bytes.zeros(frame.max_encoded_len(bytes.len(payload))))
-let written = frame.encode_into(out, payload)
-```
+## How to choose an entry point
 
-`encode_into` still allocates one buffer of its own — the check covers
-the length and the payload, so both have to exist before either can be
-stuffed. What it does not allocate is the frame.
+**`frame.encode` takes the whole payload and answers a fresh buffer.**
+The buffer is exactly the length the frame needed. This is the call for
+a program that holds a message and wants the bytes to write.
 
-`max_encoded_len` is reached exactly by a payload with no zero byte in
-it, except where the length, payload and trailer come to a whole number
-of 254-byte COBS blocks: there it reserves one byte the encoder does not
-need, because a full block at the end of the input stands for no zero
-and needs no successor.
+**`frame.encode_into` writes into a `Cursor` you already own.** Size the
+destination with `frame.max_encoded_len` first. This is the call for a
+program that sends on a schedule and wants to allocate once.
 
-## What it costs
+**`frame.decode` reads one whole frame.** It accepts the frame with or
+without its trailing delimiter. This is the call for a program whose
+transport already delivers whole messages.
 
-Encoding is one pass for the check and one for the COBS stuffing, and
-two allocations — the length prefix and the body. Decoding is the
-mirror, plus one slice for the payload. `Framer` holds one buffer and
-concatenates each chunk onto it, so a receiver fed one byte at a time
-pays one copy per byte; a receiver fed whole reads pays one per read.
+**`frame.framer` reads a stream.** It holds the bytes of a frame that
+has not ended yet, and each `push` answers the frames its chunk
+completed. This is the call for a program reading a serial link, a pipe
+or a socket.
 
-`encode_into` panics when the cursor has less room than
-`max_encoded_len` asks for, exactly as `c.put_u8` and `xs[i]` do: a
-buffer the caller sized wrong is a mistake in the program. Malformed
-**input** is never a panic — that is what `FrameError` is for.
+**`frame.int_len`, `frame.put_int` and `frame.take_int` put signed
+integers in a payload.** The value is ZigZag-folded and then LEB128
+encoded, so `-1` occupies one byte rather than the ten a plain unsigned
+varint spends on it. This is the call for the common payload, which is a
+handful of numbers.
 
-## What it does not do
+## The rules a user needs
 
-It does not decide what a payload means. There is no message type, no
-sequence number and no address in the header — a protocol that needs
-those puts them in the payload, where a reader that does not know the
-protocol cannot misread them.
+1. **A frame carries no zero byte before its delimiter.** COBS removes
+   every zero from the length prefix, the payload and the check, so a
+   receiver may split its input at each `0x00` and have split it at
+   frame boundaries.
+2. **`decode` reads one frame, and `Framer.push` splits a stream.** Two
+   frames in one buffer are not a frame. The trailing delimiter is
+   optional, because a receiver that split at each zero has already
+   removed it.
+3. **Every fault of the bytes is a value and never a panic.** `decode`
+   and `Framer.push` answer an `Err`, so a receiver counts the fault and
+   reads the next frame.
+4. **The variant says which layer refused the frame.** `Cobs` means the
+   bytes never became a length and a payload at all. `Truncated` and
+   `BadLength` mean they did, and the length disagreed with what was
+   there. `BadCrc` means the check value disagreed with the payload, and
+   it is the one that means corruption in transit. The other three
+   usually mean the receiver started reading mid-stream.
+5. **The next delimiter resynchronises the stream.** One bad frame costs
+   one frame. A `Framer` reports the bad one and goes on reading the
+   link.
+6. **`encode_into` panics when the cursor has less room than
+   `max_encoded_len` asks for.** It panics exactly as `c.put_u8` and
+   `xs[i]` do, because a buffer the caller sized wrong is a mistake in
+   the program. Malformed input is never a panic, which is what
+   `FrameError` is for.
+7. **`max_encoded_len` is reached exactly by a payload with no zero byte
+   in it.** The one exception is a length, payload and trailer that come
+   to a whole number of 254-byte COBS blocks. There the bound reserves
+   one byte the encoder does not need, because a full block at the end
+   of the input stands for no zero and needs no successor.
+8. **A `Framer` holds every byte it is fed until a delimiter arrives,
+   and nothing caps that.** A receiver that must limit its buffering
+   reads `pending_len` and calls `reset` when the answer is too large or
+   when the link drops.
+9. **`take_int` answers a `VarintError` and not a `FrameError`.** The
+   frame was whole, and what it carried did not parse. Those are two
+   different faults, and a receiver treats them differently.
+10. **Encoding is two passes and two allocations.** One pass computes
+    the check and one runs the COBS stuffing. The two allocations are
+    the length prefix and the body the stuffing reads. `encode_into`
+    still makes the second of them, because the check covers the length
+    prefix and the payload and both must exist before either can be
+    stuffed. What it does not allocate is the frame. Decoding is the
+    mirror, plus one slice for the payload. A `Framer` concatenates each
+    chunk onto its buffer, so a receiver fed one byte at a time pays one
+    copy per byte, and a receiver fed whole reads pays one copy per
+    read.
 
-No retransmission, no acknowledgement, no flow control: this is the
-frame, not the link layer above it. No encryption and no authentication
-— a CRC catches accidents and stops nobody deliberate.
+## What is not included
 
-## Dependencies
+- **A meaning for the payload.** The payload is bytes, and this package
+  neither imposes a shape on it nor needs to know one.
+- **A message type, a sequence number and an address.** A protocol that
+  needs those puts them in the payload, where a reader that does not
+  know the protocol cannot misread them.
+- **Retransmission, acknowledgement and flow control.** This is the
+  frame and not the link layer above it.
+- **Encryption and authentication.** A cyclic redundancy check catches
+  accidents, and it stops nobody deliberate.
+- **A limit on what a `Framer` holds.** No chunk is refused, so a sender
+  that never writes a delimiter would grow the buffer without bound.
+  `pending_len` and `reset` are how a receiver caps it.
+- **A build for a microcontroller.** Every entry point here allocates or
+  speaks `Bytes`, and the package ships no device program.
 
-It depends on [`cobs-nv`](https://novo-lang.org/packages/cobs-nv) for the
-stuffing that makes a zero byte a delimiter,
-[`crc-nv`](https://novo-lang.org/packages/crc-nv) for CRC-32C over the
-prefix and payload, [`varint-nv`](https://novo-lang.org/packages/varint-nv)
-for the signed integers `put_int` and `take_int` spend, and
-[`leb128-nv`](https://novo-lang.org/packages/leb128-nv) for the unsigned
-length prefix. The ranges are on
-[the package's page](https://novo-lang.org/packages/frame-nv), read from
-this manifest, with the whole closure folded under them.
+## Related packages
 
-`leb128-nv` is `^0.1.1` rather than `^0.1.0` because the decoder needs
-`decode_at`, which answers a length prefix **and** the number of bytes it
-occupied in one call; `0.1.0` had no way to ask, and a reader that has
-the length but not where the payload starts cannot go on. Every other
-range is the widest this package supports.
+- [cobs-nv](https://novo-lang.org/packages/cobs-nv) does the stuffing
+  that makes a zero byte a delimiter. This package is required at
+  `^0.1.0`.
+- [crc-nv](https://novo-lang.org/packages/crc-nv) computes the CRC-32C
+  over the length prefix and the payload. This package is required at
+  `^0.1.0`.
+- [leb128-nv](https://novo-lang.org/packages/leb128-nv) encodes and
+  decodes the unsigned length prefix. It is required at `^0.1.1` rather
+  than `^0.1.0`, because the decoder calls `decode_at`, which answers a
+  length prefix and the number of bytes it occupied in one call. `0.1.0`
+  has no such call, and a reader that has the length but not where the
+  payload starts cannot go on.
+- [varint-nv](https://novo-lang.org/packages/varint-nv) encodes and
+  decodes the signed integers `put_int` and `take_int` write and read.
+  This package is required at `^0.1.0`, and it requires `leb128-nv` at
+  `^0.1.0` as well. One version of a package is built into a program, so
+  the highest release that satisfies both requirements is resolved once
+  and pinned once in your `novo.lock`. You list `frame-nv`, and the five
+  packages under it arrive with it.
 
-`varint-nv` depends on `leb128-nv` too, at `^0.1.0`. One version of a
-package is built into a program, so what you get is the highest release
-that satisfies both requirements — `0.1.1` — resolved once and pinned
-once in your `novo.lock`. You list `frame-nv`; the five packages under it
-arrive with it.
+The ranges are on [the package's
+page](https://novo-lang.org/packages/frame-nv), read from this manifest,
+with the whole closure folded under them.
 
 ## Tests
 
@@ -207,11 +219,20 @@ novo test tests/frame_tests.nv
 ```
 
 The four frames in the suite were computed from the format's definition
-— LEB128 by hand, CRC-32C from the Castagnoli polynomial, COBS from
-Cheshire and Baker's description — rather than by running this encoder,
-so they are evidence that the bytes on the wire are the bytes the layout
-says. Beyond those: a round trip at every payload length up to 300 for
-both a zero-free and an all-zero payload, the property that no zero
-reaches the wire before the delimiter, each of the five ways a frame can
-be refused, and the framer fed one byte at a time, fed several frames at
-once, and made to resynchronise after a corrupt one.
+rather than by running this encoder, so they are evidence that the bytes
+on the wire are the bytes the layout says. LEB128 was computed by hand,
+CRC-32C from the Castagnoli polynomial, and COBS from Cheshire and
+Baker's description.
+
+Beyond those four, the suite asserts a round trip at every payload
+length up to 300 for both a zero-free and an all-zero payload, the
+property that no zero reaches the wire before the delimiter, each of the
+five ways a frame can be refused, and the framer fed one byte at a time,
+fed several frames at once, and made to resynchronise after a corrupt
+one.
+
+## Licence
+
+Apache-2.0. See `LICENSE`.
+
+<!-- docs/writing-a-readme.md is the style guide for this page. -->

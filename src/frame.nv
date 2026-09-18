@@ -1,21 +1,24 @@
-// Frame — a packet on a stream that has no packets.
+// frame — a packet on a stream that has no packets.
 //
-// What it is.  A serial link, a pipe and a TCP connection all deliver
-// bytes, in whatever sized pieces they feel like, with no mark where
-// one message ends and the next begins.  Three things put the messages
-// back:
+// A serial link, a pipe and a TCP connection all deliver bytes, in
+// whatever sized pieces they choose, with no mark where one message
+// ends and the next begins.  A frame is one message wrapped so that a
+// reader can find where it ends and can tell a corrupted one from a
+// good one.  Three parts do that.
 //
-//   a DELIMITER, so a reader can find the end of a frame without being
-//   told its length — here a `0x00` byte, made unambiguous by COBS,
-//   which removes every zero from the frame's own bytes;
+// A delimiter is the byte that ends a frame.  Here it is `0x00`.  It
+// lets a reader find the end of a frame without being told the length
+// first.  It is unambiguous because COBS removes every zero from the
+// frame's own bytes.
 //
-//   a LENGTH, so a reader knows how much of what it found is payload —
-//   here an unsigned LEB128 varint, one byte for anything under 128;
+// A length is the count of payload bytes.  Here it is an unsigned
+// LEB128 varint, which is one byte for any count below 128.  It lets a
+// reader know how much of what it found is payload.
 //
-//   a CHECK, so a reader can tell a corrupted frame from a good one —
-//   here CRC-32C over the length and the payload together, which is
-//   what catches a frame whose bytes changed but whose delimiters did
-//   not.
+// A check is a value computed over the bytes it covers.  Here it is
+// CRC-32C over the length prefix and the payload together.  It lets a
+// reader tell a corrupted frame from a good one, which is the fault a
+// delimiter and a length cannot catch.
 //
 // The layout, before COBS runs over it and the delimiter is appended:
 //
@@ -24,29 +27,27 @@
 //     +-----------------+---------+-------------------+
 //     |<--------- the check covers this --->|
 //
-// What it does.  `encode` and `decode` for one frame, `max_encoded_len`
-// for the buffer to reserve, and a `Framer` that takes bytes as they
-// arrive and answers whole frames.  A corrupt frame is a value naming
-// what was wrong and where.
+// `encode` and `decode` handle one whole frame.  `max_encoded_len` is
+// the number of bytes to reserve for one.  `framer` takes bytes as they
+// arrive off a link and answers the frames they completed.  `put_int`
+// and `take_int` are here for the common payload, which is a handful of
+// integers.  Each carries a worked example below.
 //
-// How to use it.  `encode` and `decode` handle one whole frame;
-// `framer` takes bytes as they arrive off a link and answers the frames
-// they completed.  `put_int` and `take_int` are there for the common
-// payload, which is a handful of integers.  Each carries a worked
-// example below.
+// A corrupt frame is a value naming what was wrong and where.  Nothing
+// about bad input panics.
 //
-// What it costs.  Encoding is one pass for the check and one for the
-// COBS stuffing, and two allocations — the length prefix and the body
-// COBS then reads.  The body has to exist before it can be stuffed,
-// because the check covers it, so the in-place `encode_into` still
-// builds one buffer of its own; what it does not do is allocate the
-// frame, which lands in the caller's cursor.  Decoding is the mirror,
-// plus one slice for the payload.
+// Encoding is one pass for the check and one for the COBS stuffing, and
+// two allocations.  The two are the length prefix and the body COBS
+// then reads.  The body has to exist before it can be stuffed, because
+// the check covers it, so `encode_into` still builds one buffer of its
+// own.  What it does not allocate is the frame, which lands in the
+// caller's cursor.  Decoding is the mirror, plus one slice for the
+// payload.
 //
-// What it does not do.  It does not decide what the payload means, and
-// it carries no message type, no sequence number and no address — a
-// protocol that needs those puts them in the payload, where a reader
-// that does not know the protocol cannot misread them.
+// This module does not decide what a payload means.  It carries no
+// message type, no sequence number and no address.  A protocol that
+// needs those puts them in the payload, where a reader that does not
+// know the protocol cannot misread them.
 
 use std.bytes
 use std.list
@@ -55,8 +56,8 @@ use crc
 use leb128
 use varint
 
-// The byte that ends a frame.  COBS guarantees it appears nowhere
-// inside one, which is the whole reason the frame is COBS-encoded.
+// The byte that ends a frame.  COBS removes every zero from the bytes
+// inside a frame, so this byte appears nowhere but at its end.
 fn delimiter() -> Int
     0
 
@@ -64,9 +65,10 @@ fn delimiter() -> Int
 fn trailer_len() -> Int
     4
 
-// The algorithm the trailer holds: CRC-32C, the Castagnoli polynomial
-// used by iSCSI, SCTP, ext4 and Btrfs, and the one modern processors
-// have an instruction for.
+// The algorithm the trailer holds.  CRC-32C is the cyclic redundancy
+// check over the Castagnoli polynomial, defined in RFC 3720 appendix B.
+// It is the check iSCSI, SCTP, ext4 and Btrfs use, and the one modern
+// processors have an instruction for.
 fn algorithm() -> Crc
     crc.crc32c()
 
@@ -75,11 +77,12 @@ fn algorithm() -> Crc
 // What was wrong with a frame, and where.
 //
 // Every one of these is a property of the bytes that arrived rather
-// than of the program that read them, so every one of them is a value:
-// a receiver counts them, logs them, and reads the next frame.  Which
-// variant it is says which layer refused — `Cobs` means the bytes never
-// became a length and a payload, `BadCrc` means they did and then
-// disagreed with their own check.  `decode` carries the worked example.
+// than of the program that read them, so every one of them is a value.
+// A receiver counts them, logs them, and reads the next frame.  Which
+// variant it is says which layer refused the frame.  `Cobs` means the
+// bytes never became a length and a payload.  `BadCrc` means they did
+// and then disagreed with their own check.  `decode` carries the worked
+// example.
 pub enum FrameError
     // The frame ended before its length prefix said it would.  `at` is
     // how many bytes it actually held.
@@ -87,7 +90,7 @@ pub enum FrameError
     // The length prefix is unreadable, or names a payload that does not
     // match the bytes present.  `at` is the offset it disagreed at.
     BadLength(at: Int)
-    // The trailer does not match the payload it covers: the frame's
+    // The trailer does not match the payload it covers.  The frame's
     // bytes changed on the way.
     BadCrc(expected: Int, found: Int)
     // The COBS layer refused the bytes, so the frame never became a
@@ -97,10 +100,10 @@ pub enum FrameError
 // The standard `Error` implementation, so a bad frame can be reported
 // by anything that reports errors.
 impl Error for FrameError
-    // Answer the one-line report: which layer refused the frame, and
+    // Answer the one-line report of which layer refused the frame, and
     // where.  A `Cobs` fault carries the COBS message inside its own,
     // so a reader sees the whole chain in one line rather than having
-    // to unwrap to find out what actually happened.
+    // to unwrap the fault to read it.
     fn message(self) -> Str
         match self
             Truncated(at)           => "frame: the frame ended after ${at} byte(s), before its length prefix said it would"
@@ -116,10 +119,10 @@ impl Error for FrameError
 //
 // The number to reserve before encoding, and the number a link's
 // buffer has to be able to hold.  A payload with no zero byte in it
-// reaches it exactly, except where the length, payload and trailer come
-// to a whole number of 254-byte COBS blocks — there the bound is one
-// byte generous, because a full block at the very end of the input
-// stands for no zero and needs no successor.
+// reaches the bound exactly.  The one exception is a length, payload
+// and trailer that come to a whole number of 254-byte COBS blocks.
+// There the bound is one byte generous, because a full block at the
+// very end of the input stands for no zero and needs no successor.
 //
 // ```novo
 // // A short payload costs its own length plus the prefix, the check,
@@ -135,10 +138,10 @@ pub fn max_encoded_len(payload_len: Int) -> Int
 //
 // The cursor must have `max_encoded_len(bytes.len(payload))` bytes of
 // room.  Too little is a panic, exactly as it is for `c.put_u8` and for
-// `xs[i]`: a buffer the caller sized wrong is a mistake in the program,
-// not a value the program should carry around.
+// `xs[i]`.  A buffer the caller sized wrong is a mistake in the program
+// and not a value the program should carry around.
 //
-// It still allocates one buffer of its own — the length, payload and
+// It still allocates one buffer of its own.  The length, payload and
 // check have to exist before COBS can stuff them, because the check
 // covers them.  What it does not allocate is the frame, which is the
 // one that goes on the wire.
@@ -168,10 +171,10 @@ pub fn encode_into(mut dst: Cursor, payload: Bytes) -> Int
 // delimiter included.
 //
 // The form for a caller sending one message.  The answer contains no
-// `0x00` except the delimiter at its end — that is what COBS is for —
-// so it can be written straight onto a link that separates frames by
-// zero.  `decode` inverts it exactly, for every payload including the
-// empty one.
+// `0x00` except the delimiter at its end, which is what the COBS layer
+// is for.  It can be written straight onto a link that separates frames
+// by zero.  `decode` inverts it exactly, for every payload including
+// the empty one.
 //
 // ```novo
 // use std.bytes
@@ -195,9 +198,9 @@ pub fn encode(payload: Bytes) -> Bytes
 // the bytes COBS then removes the zeros from.
 //
 // The check is taken over the prefix and the payload as two pieces
-// rather than over the assembled buffer, because a CRC's running state
-// is a number: feeding it twice costs nothing and saves reading back
-// what was just written.
+// rather than over the assembled buffer.  A CRC's running state is a
+// number, so feeding it twice costs nothing and saves reading back what
+// was just written.
 fn body_of(payload: Bytes) -> Bytes
     let prefix = leb128.encode(bytes.len(payload))
     let algo = algorithm()
@@ -213,15 +216,15 @@ fn body_of(payload: Bytes) -> Bytes
 
 // Read the payload out of one frame.
 //
-// `wire` is the frame's bytes with or without the trailing delimiter:
-// `encode` writes one, a receiver that split its input at each zero has
-// already removed it, and both are the same frame.  What it will not
-// take is two frames — this decodes one, and `Framer.push` is what
-// splits a stream.
+// `wire` is the frame's bytes with or without the trailing delimiter.
+// `encode` writes one, and a receiver that split its input at each zero
+// has already removed it.  Both are the same frame.  What this will not
+// take is two frames.  It reads one, and `Framer.push` is what splits a
+// stream.
 //
-// Every fault is an `Err` naming the layer that refused and where,
-// never a panic: the whole point of a check value is that a receiver
-// keeps going.
+// Every fault is an `Err` naming the layer that refused and where, and
+// never a panic.  A check value is there so that a receiver can count
+// the bad frame and keep reading.
 //
 // ```novo
 // use std.bytes
@@ -270,8 +273,8 @@ fn payload_of(plain: Bytes) -> Result<Bytes, FrameError>
 // and the check that follows when it does not.
 //
 // A negative `len` is a prefix that decoded to a number at or above
-// 2^63 — the bit pattern of an enormous unsigned value, and never a
-// length any frame could carry.
+// 2^63.  That is the bit pattern of an enormous unsigned value, and
+// never a length any frame could carry.
 fn sized(plain: Bytes, total: Int, prefix_len: Int, len: Int) -> Result<Bytes, FrameError>
     let covered = prefix_len + len
     if len < 0
@@ -300,18 +303,18 @@ fn checked(plain: Bytes, prefix_len: Int, covered: Int) -> Result<Bytes, FrameEr
 
 // A receiver that holds the bytes of a frame that has not ended yet.
 //
-// The stream is the reason this module exists: `decode` needs a whole
-// frame, and a link delivers whatever fits in one read.  A `Framer`
-// holds the tail that has not been delimited yet and nothing else, so
-// it costs the size of one partial frame.  `framer()` answers a fresh
-// one; `push` is where the work happens.
+// `decode` needs a whole frame, and a link delivers whatever fits in
+// one read.  A `Framer` holds the difference.  It holds the tail that
+// has not been delimited yet and nothing else, so it costs the size of
+// one partial frame.  `framer()` answers a fresh one, and `push` is
+// where the work happens.
 pub struct Framer
     var pending: Bytes
 
 // Build a receiver holding nothing.
 //
-// It carries no configuration — a frame's shape is fixed by the format
-// — so two framers differ only in what they have been fed.  Feed it
+// It carries no configuration, because the format fixes a frame's
+// shape.  Two framers differ only in what they have been fed.  Feed one
 // with `push` and read what comes back.
 //
 // ```novo
@@ -335,12 +338,12 @@ impl Framer
     // completed, in arrival order.
     //
     // An empty list is the normal answer to a chunk that did not finish
-    // a frame; the bytes are kept.  A frame that does not decode is an
-    // `Err` in the list rather than a silently dropped one, so a
-    // receiver can count what it lost — and either way the next
-    // delimiter resynchronises the stream, which is what a delimiter is
-    // for.  Nothing here caps what is held, so a link that can be fed
-    // faster than it is delimited should watch `pending_len`.
+    // a frame, and the bytes are kept.  A frame that does not decode is
+    // an `Err` in the list rather than a silently dropped one, so a
+    // receiver can count what it lost.  Either way the next delimiter
+    // resynchronises the stream.  Nothing here caps what is held, so a
+    // link that can be fed faster than it is delimited should watch
+    // `pending_len`.
     //
     // ```novo
     // use std.bytes
@@ -357,7 +360,7 @@ impl Framer
         self.pending = bytes.concat([self.pending, chunk])
         var out: [Result<Bytes, FrameError>] = []
         // Where the frame currently being scanned began.  The scan is a
-        // walk over bytes rather than a map over elements: each
+        // walk over bytes rather than a map over elements.  Each
         // delimiter ends a run whose start the previous one fixed, so
         // one step cannot be written without the one before it.
         var start = 0
@@ -375,10 +378,11 @@ impl Framer
     // Answer how many bytes are held for a frame that has not ended.
     //
     // A link that can be fed faster than it is delimited needs this to
-    // cap what it buffers: nothing in here refuses a chunk, so a sender
+    // cap what it buffers.  Nothing in here refuses a chunk, so a sender
     // that never writes a delimiter would otherwise grow the buffer
-    // without limit.  Zero right after a `push` that ended on a
-    // delimiter, which is how a receiver knows it is between frames.
+    // without limit.  The answer is zero right after a `push` that ended
+    // on a delimiter, which is how a receiver knows it is between
+    // frames.
     //
     // ```novo
     // use std.bytes
@@ -396,28 +400,29 @@ impl Framer
 
     // Throw away the partial frame.
     //
-    // What to do after a link drops: the bytes before the next
-    // delimiter are the head of something whose tail will never
-    // arrive.  It is also how a receiver enforces its own buffer cap,
-    // after `pending_len` says the sender has gone too long without a
-    // delimiter.  Frames already answered by `push` are unaffected —
-    // this holds nothing else.
+    // What to do after a link drops.  The bytes before the next
+    // delimiter are the head of something whose tail will never arrive.
+    // It is also how a receiver enforces its own buffer cap, after
+    // `pending_len` says the sender has gone too long without a
+    // delimiter.  Frames already answered by `push` are unaffected,
+    // because a `Framer` holds nothing else.
     fn reset(mut self)
         self.pending = bytes.zeros(0)
 
 // ── Numbers inside a payload ─────────────────────────────────────────
 //
 // A payload is bytes, and this module neither imposes a shape on it nor
-// needs to know one.  But the common payload is a handful of integers,
-// and writing those as fixed eight-byte words spends most of a frame on
-// leading zeros — so the three calls that put a signed integer into a
-// payload, size it, and take it back out are here rather than in every
-// caller.
+// needs to know one.  The common payload is a handful of integers, and
+// writing those as fixed eight-byte words spends most of a frame on
+// leading zeros.  The three calls that put a signed integer into a
+// payload, size it, and take it back out are therefore here rather than
+// in every caller.
 
 // Answer how many bytes `value` will occupy in a payload.
 //
 // The number to add up when sizing a payload buffer before writing it.
-// Magnitude decides, not sign: `-1` and `1` are both one byte.
+// Magnitude decides the answer and sign does not, so `-1` and `1` are
+// both one byte.
 //
 // ```novo
 // println("${frame.int_len(0 - 1)} ${frame.int_len(1)}")   // 1 1
@@ -430,9 +435,10 @@ pub fn int_len(value: Int) -> Int
 // answer the byte count.
 //
 // A small negative costs one byte rather than the ten a fixed word
-// would spend, which is the whole reason this is here rather than left
-// to the caller.  The cursor is the payload's, not the frame's: these
-// three go inside a payload, and the frame is built from the result.
+// would spend, which is why the call is here rather than left to the
+// caller.  The cursor is the payload's and not the frame's.  These
+// three calls write inside a payload, and the frame is built from the
+// result.
 //
 // ```novo
 // use std.bytes
@@ -454,9 +460,9 @@ pub fn put_int(mut dst: Cursor, value: Int) -> Int
 
 // Read the signed integer at the cursor, leaving the cursor after it.
 //
-// The fault is a `VarintError` rather than a `FrameError` because a
-// payload's contents are the caller's protocol, not this frame's: the
-// frame was whole, and what it carried did not parse.  The cursor's
+// The fault is a `VarintError` rather than a `FrameError`, because a
+// payload's contents are the caller's protocol and not this frame's.
+// The frame was whole, and what it carried did not parse.  The cursor's
 // position after a read is where the next number starts, so a payload
 // of several is read by calling again.  See `put_int` for the example.
 pub fn take_int(mut src: Cursor) -> Result<Int, VarintError>

@@ -4,28 +4,30 @@
 // Run from the package directory:
 //   novo test tests/frame_tests.nv
 //
-// The four frames below were computed from the format's definition —
-// LEB128 by hand, CRC-32C from the Castagnoli polynomial, COBS from
-// Cheshire and Baker's description — rather than by running this
-// encoder, so the suite is evidence that the bytes on the wire are the
-// bytes the layout says, and not merely self-consistent.
+// The four frames below were computed from the format's definition
+// rather than by running this encoder.  LEB128 was computed by hand,
+// CRC-32C from the Castagnoli polynomial, and COBS from Cheshire and
+// Baker's description.  The suite is therefore evidence that the bytes
+// on the wire are the bytes the layout says, and not merely evidence
+// that the encoder agrees with itself.
 
 use std.bytes
 use std.list
 use std.test
 use frame
 
-// The frame carrying "hi": length 02, payload 68 69, CRC-32C 2bf75f67
-// little-endian, COBS-stuffed under one 8-byte block header, delimiter.
+// The frame carrying "hi".  The length is 02, the payload is 68 69, the
+// CRC-32C is 2bf75f67 little-endian, the whole is COBS-stuffed under one
+// 8-byte block header, and the delimiter ends it.
 fn frame_of_hi() -> Str
     "08026869675ff72b00"
 
-// The frame carrying nothing.  Its length prefix IS a zero byte, so
-// COBS opens with a one-byte block that stands for it.
+// The frame carrying nothing.  Its length prefix is itself a zero byte,
+// so COBS opens with a one-byte block that stands for it.
 fn frame_of_empty() -> Str
     "010551537d5200"
 
-// A payload full of zeros, which is what COBS is for: three of them
+// A payload full of zeros, which is what COBS is for.  Three of them
 // vanish into block headers and none reaches the wire.
 fn payload_with_zeros() -> Str
     "010002000003"
@@ -39,9 +41,9 @@ fn frame_of_novo_lang() -> Str
 fn buf(hex: Str) -> Bytes
     bytes.from_hex(hex) ?? bytes.zeros(0)
 
-// `n` bytes with no zero among them, so COBS's overhead is at its
-// worst case: every byte reaches the wire and every block header is an
-// extra byte on top.
+// `n` bytes with no zero among them, so COBS's overhead is at its worst
+// case.  Every byte reaches the wire and every block header is an extra
+// byte on top.
 fn zero_free(n: Int) -> Bytes
     var c = bytes.cursor_le(bytes.zeros(n))
     for i in 0..n
@@ -79,7 +81,7 @@ fn test_round_trip_over_every_length_up_to_300() [io]
 
 @test
 fn test_round_trip_over_an_all_zero_payload() [io]
-    // The other extreme: every byte is the delimiter, so every byte
+    // The other extreme.  Every byte is the delimiter, so every byte
     // becomes a block header and none of them reaches the wire.
     for n in 0..301
         test.case("length ${n}")
@@ -88,8 +90,8 @@ fn test_round_trip_over_an_all_zero_payload() [io]
 
 @test
 fn test_a_frame_carries_no_zero_before_its_delimiter() [io]
-    // The property the whole design rests on: if a zero could occur
-    // inside a frame, the delimiter would end frames in the middle.
+    // The property the format rests on.  If a zero could occur inside a
+    // frame, the delimiter would end frames in the middle.
     for n in 0..300
         test.case("length ${n}")
         let wire = frame.encode(bytes.zeros(n))
@@ -102,11 +104,11 @@ fn test_a_frame_carries_no_zero_before_its_delimiter() [io]
 @test
 fn test_max_encoded_len_is_never_exceeded_and_is_tight() [io]
     // A caller sizes a buffer from this number, so exceeding it is a
-    // buffer overrun — and a bound nothing comes near is a bound nobody
-    // can check, so the zero-free payload's distance from it is
-    // asserted too.  That distance is zero everywhere except where the
-    // body is a whole number of 254-byte COBS blocks, where the bound
-    // reserves one byte the encoder does not need.
+    // buffer overrun.  A bound nothing comes near is a bound nobody can
+    // check, so the zero-free payload's distance from it is asserted
+    // too.  That distance is zero everywhere except where the body is a
+    // whole number of 254-byte COBS blocks, where the bound reserves one
+    // byte the encoder does not need.
     for n in 0..300
         test.case("length ${n}")
         let worst = bytes.len(frame.encode(zero_free(n)))
@@ -119,8 +121,8 @@ fn test_max_encoded_len_is_never_exceeded_and_is_tight() [io]
 @test
 fn test_the_in_place_form_writes_into_the_callers_buffer() [io]
     // A cursor owns its buffer, so a write through one lands where the
-    // caller can read it — which is why the in-place form takes a
-    // cursor rather than a buffer and an offset.
+    // caller can read it.  That is why the in-place form takes a cursor
+    // rather than a buffer and an offset.
     let payload = buf("6869")
     var c = bytes.cursor_le(bytes.zeros(frame.max_encoded_len(2) * 2))
     let a = frame.encode_into(c, payload)
@@ -142,9 +144,9 @@ fn test_a_frame_is_decoded_with_or_without_its_delimiter() [io]
 @test
 fn test_a_changed_byte_is_caught_by_the_check() [io]
     // One bit of the payload, flipped where it disturbs no block
-    // header: the frame is still well formed and still decodes to a
-    // payload — which is exactly the failure a length and a delimiter
-    // cannot catch, and the check exists for.
+    // header.  The frame is still well formed and still decodes to a
+    // payload.  That is the failure a length and a delimiter cannot
+    // catch, and the one the check is there for.
     let wire = buf(frame_of_novo_lang())
     let damaged = bytes.set_u8(wire, 4, 0x77)
     match frame.decode(damaged)
@@ -181,7 +183,8 @@ fn test_an_unreadable_length_prefix_is_a_value() [io]
 @test
 fn test_a_zero_inside_a_frame_is_the_cobs_layer_refusing() [io]
     // The one byte an encoded frame cannot contain.  The refusal names
-    // the layer, because that is where a reader would look.
+    // the layer that rejected the bytes, because that is where a reader
+    // would look.
     match frame.decode(buf("030001"))
         Ok(_)  => test.fail("a frame with a zero in it decoded")
         Err(e) => test.assert_true(str.contains(e.message(), "cobs:"),
@@ -230,9 +233,9 @@ fn test_the_framer_answers_several_frames_from_one_chunk() [io]
 
 @test
 fn test_the_framer_survives_being_fed_one_byte_at_a_time() [io]
-    // The worst chunking a link can produce: every frame split at every
-    // byte.  A receiver that only works on whole frames is not a
-    // receiver.
+    // The worst chunking a link can produce, which is every frame split
+    // at every byte.  A receiver has to answer the same frames however
+    // its input was divided.
     let stream = bytes.concat([frame.encode(buf("6869")),
                                frame.encode(buf("6e6f766f2d6c616e67")),
                                frame.encode(buf(payload_with_zeros()))])
@@ -244,8 +247,8 @@ fn test_the_framer_survives_being_fed_one_byte_at_a_time() [io]
 
 @test
 fn test_the_framer_resynchronises_after_a_corrupt_frame() [io]
-    // The point of a delimiter: one bad frame costs one frame, not the
-    // rest of the stream.  The bad one is reported rather than
+    // A delimiter is there so that one bad frame costs one frame and not
+    // the rest of the stream.  The bad one is reported rather than
     // silently dropped, so a receiver can count what it lost.
     let good = frame.encode(buf("6869"))
     let damaged = bytes.set_u8(frame.encode(buf("6e6f766f2d6c616e67")), 4, 0x77)
@@ -256,7 +259,7 @@ fn test_the_framer_resynchronises_after_a_corrupt_frame() [io]
 @test
 fn test_the_framer_ignores_a_run_of_delimiters() [io]
     // An idle link that sends zeros, and a receiver that joined in the
-    // middle of a frame: neither is an error, and neither is a frame.
+    // middle of a frame.  Neither is an error, and neither is a frame.
     var f = frame.framer()
     let out = f.push(bytes.concat([buf("000000"), frame.encode(buf("6869")),
                                    buf("0000")]))
@@ -264,7 +267,7 @@ fn test_the_framer_ignores_a_run_of_delimiters() [io]
 
 @test
 fn test_reset_throws_away_the_partial_frame() [io]
-    // What to do after a link drops: the bytes before the next
+    // What to do after a link drops.  The bytes before the next
     // delimiter are the head of something whose tail will never come.
     var f = frame.framer()
     let wire = frame.encode(buf("6869"))
@@ -301,8 +304,8 @@ fn test_numbers_in_a_payload_round_trip() [io]
 
 @test
 fn test_a_small_negative_number_costs_one_byte() [io]
-    // The reason the payload helper folds before it encodes: a plain
-    // unsigned varint of -1 is ten bytes.
+    // The payload calls fold the value before they encode it, because a
+    // plain unsigned varint of -1 is ten bytes.
     test.assert_eq(frame.int_len(0 - 1), 1)
     test.assert_eq(frame.int_len(63), 1)
     test.assert_eq(frame.int_len(0 - 64), 1)
@@ -310,8 +313,8 @@ fn test_a_small_negative_number_costs_one_byte() [io]
 
 @test
 fn test_a_payload_that_runs_out_mid_number_is_a_value() [io]
-    // The frame was whole and what it carried did not parse, which is
-    // why the fault is the varint's rather than the frame's.
+    // The frame was whole and what it carried did not parse, so the
+    // fault is the varint's rather than the frame's.
     var r = bytes.cursor_le(buf("8080"))
     match frame.take_int(r)
         Ok(v)  => test.fail("a truncated number decoded to ${v}")
