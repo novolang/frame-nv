@@ -235,7 +235,7 @@ fn body_of(payload: Bytes) -> Bytes
 //     Err(e) => println(e.message())
 //
 // // One flipped byte in the payload: the check catches it and says so.
-// var broken = bytes.cursor_le(wire)
+// var broken = bytes.cursor_le(bytes.clone(wire))
 // broken.seek(3)
 // broken.put_u8(0x68)
 // match frame.decode(broken.finish())
@@ -243,23 +243,31 @@ fn body_of(payload: Bytes) -> Bytes
 //     Err(e) => println(e.message())        // frame: the check value is … corrupt
 // ```
 pub fn decode(wire: Bytes) -> Result<Bytes, FrameError>
-    let body = without_delimiter(wire)
-    if bytes.len(body) == 0
+    let n = body_len(wire)
+    if n == 0
         Err(FrameError.Truncated(at: 0))
+    else if n == bytes.len(wire)
+        unstuffed(wire)
     else
-        match cobs.decode(body)
-            Err(e)    => Err(FrameError.Cobs(inner: e))
-            Ok(plain) => payload_of(plain)
+        unstuffed(bytes.slice(wire, 0, n))
 
-// `wire` with one trailing delimiter removed, if it carries one.
-fn without_delimiter(wire: Bytes) -> Bytes
+// The length of `wire` without one trailing delimiter, if it carries
+// one.  The length rather than the shortened buffer, so a frame that
+// arrives without its delimiter is decoded where it is, uncopied.
+fn body_len(wire: Bytes) -> Int
     let n = bytes.len(wire)
-    // The default is not the delimiter, so an empty buffer falls
-    // through unchanged rather than through the slice below.
+    // The default is not the delimiter, so an empty buffer answers 0
+    // rather than -1.
     if n > 0 and (bytes.byte_at(wire, n - 1) ?? 1) == delimiter()
-        bytes.slice(wire, 0, n - 1)
+        n - 1
     else
-        wire
+        n
+
+// The payload of a frame body that has no delimiter in it.
+fn unstuffed(body: Bytes) -> Result<Bytes, FrameError>
+    match cobs.decode(body)
+        Err(e)    => Err(FrameError.Cobs(inner: e))
+        Ok(plain) => payload_of(plain)
 
 // The payload inside an unstuffed frame, once its length prefix and its
 // trailer agree with the bytes present.
@@ -448,12 +456,12 @@ pub fn int_len(value: Int) -> Int
 // let n = frame.put_int(w, 0 - 1) + frame.put_int(w, 300) + frame.put_int(w, 7)
 // let wire = frame.encode(bytes.slice(w.finish(), 0, n))
 //
-// match frame.decode(wire)
-//     Err(e) => println(e.message())
-//     Ok(p)  =>
-//         var r = bytes.cursor_le(p)
-//         println("${frame.take_int(r)!} ${frame.take_int(r)!} ${frame.take_int(r)!}")
-//         // -1 300 7
+// // The cursor is built over the decoded payload, so the payload is
+// // held in a `var`.
+// var p = frame.decode(wire)!
+// var r = bytes.cursor_le(p)
+// println("${frame.take_int(r)!} ${frame.take_int(r)!} ${frame.take_int(r)!}")
+// // -1 300 7
 // ```
 pub fn put_int(var dst: Cursor, value: Int) -> Int
     varint.encode_into(dst, value)

@@ -5,6 +5,20 @@ bumps the minor number and a compatible one the patch; see [Version
 numbers in the Orbit package
 registry](https://novo-lang.org/docs/registry/semver.html).
 
+## 0.1.7 — 2026-09-25
+
+`decode` no longer hands back the caller's buffer from inside itself.
+It works out the length of the frame without its trailing zero byte and
+decodes the buffer where it is when there is no such byte, or a copy
+without it when there is.  The next Novo release refuses a function that
+answers a buffer it was only given to read.  No signature changed, and
+every answer is what 0.1.6 gave.
+
+- The `put_int` example and one test hold the decoded payload in a
+  `var`, because a cursor is built over it.  The `decode` example flips
+  a byte of a copy of the frame, so the frame it started from stays as
+  it was.
+
 ## 0.1.6 — 2026-09-25
 
 One test changed so that it builds with novo 0.10.0.  A `Bytes` buffer is

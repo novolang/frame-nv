@@ -295,7 +295,7 @@ fn test_numbers_in_a_payload_round_trip() [io]
     test.assert_eq(a, frame.int_len(0 - 1))
     test.assert_eq(b, frame.int_len(150))
     test.assert_eq(c, frame.int_len(0 - 1000000))
-    let payload = frame.decode(frame.encode(w.finish()))!
+    var payload = frame.decode(frame.encode(w.finish()))!
     var r = bytes.cursor_le(payload)
     test.assert_eq(frame.take_int(r)!, 0 - 1)
     test.assert_eq(frame.take_int(r)!, 150)
