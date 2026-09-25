@@ -147,8 +147,8 @@ fn test_a_changed_byte_is_caught_by_the_check() [io]
     // header.  The frame is still well formed and still decodes to a
     // payload.  That is the failure a length and a delimiter cannot
     // catch, and the one the check is there for.
-    let wire = buf(frame_of_novo_lang())
-    let damaged = bytes.set_u8(wire, 4, 0x77)
+    var damaged = buf(frame_of_novo_lang())
+    bytes.set_u8(damaged, 4, 0x77)
     match frame.decode(damaged)
         Ok(_)  => test.fail("a corrupted frame decoded")
         Err(e) => test.assert_true(str.contains(e.message(), "corrupt"),

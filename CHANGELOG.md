@@ -5,6 +5,18 @@ bumps the minor number and a compatible one the patch; see [Version
 numbers in the Orbit package
 registry](https://novo-lang.org/docs/registry/semver.html).
 
+## 0.1.6 — 2026-09-25
+
+One test changed so that it builds with novo 0.10.0.  A `Bytes` buffer is
+now written in place, and a write goes through a name declared `var`.  The
+test that flips a byte of a frame now declares that buffer `var` and writes
+into it.
+
+- The sources are in the form the novo 0.10.0 formatter prints.  It
+  spells the marker on a written-through parameter and receiver `var`
+  where the sources said `mut`.  The two spellings mean the same thing,
+  so no signature changed.
+
 ## 0.1.5 — 2026-09-18
 
 The documentation and comments in plain prose; no signature changed.

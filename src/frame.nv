@@ -159,7 +159,7 @@ pub fn max_encoded_len(payload_len: Int) -> Int
 // var f = frame.framer()
 // println("${list.len(f.push(bytes.slice(out.finish(), 0, n)))}")   // 2
 // ```
-pub fn encode_into(mut dst: Cursor, payload: Bytes) -> Int
+pub fn encode_into(var dst: Cursor, payload: Bytes) -> Int
     let start = dst.pos()
     // The stuffed length is the cursor's own advance, so the count
     // `cobs.encode_into` answers says nothing this line does not.
@@ -356,7 +356,7 @@ impl Framer
     //     done = done + list.len(f.push(bytes.slice(wire, i, i + 1)))
     // println("${done}")   // 1
     // ```
-    fn push(mut self, chunk: Bytes) -> [Result<Bytes, FrameError>]
+    fn push(var self, chunk: Bytes) -> [Result<Bytes, FrameError>]
         self.pending = bytes.concat([self.pending, chunk])
         var out: [Result<Bytes, FrameError>] = []
         // Where the frame currently being scanned began.  The scan is a
@@ -406,7 +406,7 @@ impl Framer
     // `pending_len` says the sender has gone too long without a
     // delimiter.  Frames already answered by `push` are unaffected,
     // because a `Framer` holds nothing else.
-    fn reset(mut self)
+    fn reset(var self)
         self.pending = bytes.zeros(0)
 
 // ── Numbers inside a payload ─────────────────────────────────────────
@@ -455,7 +455,7 @@ pub fn int_len(value: Int) -> Int
 //         println("${frame.take_int(r)!} ${frame.take_int(r)!} ${frame.take_int(r)!}")
 //         // -1 300 7
 // ```
-pub fn put_int(mut dst: Cursor, value: Int) -> Int
+pub fn put_int(var dst: Cursor, value: Int) -> Int
     varint.encode_into(dst, value)
 
 // Read the signed integer at the cursor, leaving the cursor after it.
@@ -465,5 +465,5 @@ pub fn put_int(mut dst: Cursor, value: Int) -> Int
 // The frame was whole, and what it carried did not parse.  The cursor's
 // position after a read is where the next number starts, so a payload
 // of several is read by calling again.  See `put_int` for the example.
-pub fn take_int(mut src: Cursor) -> Result<Int, VarintError>
+pub fn take_int(var src: Cursor) -> Result<Int, VarintError>
     varint.decode_from(src)
