@@ -1,0 +1,38 @@
+// hostile_tests.nv — frames whose length prefix cannot be honest.
+
+use std.bytes
+use std.test
+use frame
+use cobs
+use leb128
+
+// A frame body whose prefix declares `len`, followed by `tail` bytes,
+// stuffed and delimited.
+fn framed_with_prefix(len: Int, tail: Int) -> Bytes
+    let prefix = leb128.encode(len)
+    var c = bytes.cursor_le(bytes.zeros(bytes.len(prefix) + tail))
+    c.put_bytes(prefix)
+    for _ in 0..tail
+        c.put_u8(7)
+    var out = bytes.concat([cobs.encode(c.finish()), bytes.zeros(1)])
+    out
+
+fn refused(len: Int) -> Bool
+    match frame.decode(framed_with_prefix(len, 6))
+        Ok(_)  => false
+        Err(_) => true
+
+@test
+fn test_the_largest_declared_length_is_refused() [io]
+    test.assert(refused(9223372036854775807))
+
+@test
+fn test_a_length_near_the_largest_is_refused() [io]
+    test.assert(refused(9223372036854775800))
+
+@test
+fn test_an_honest_frame_still_decodes() [io]
+    let wire = frame.encode(bytes.from_hex("0102") ?? bytes.zeros(0))
+    match frame.decode(wire)
+        Ok(p)  => test.assert_eq_str(bytes.to_hex(p), "0102")
+        Err(_) => test.assert(false)

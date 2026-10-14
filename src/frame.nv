@@ -284,15 +284,14 @@ fn payload_of(plain: Bytes) -> Result<Bytes, FrameError>
 // 2^63.  That is the bit pattern of an enormous unsigned value, and
 // never a length any frame could carry.
 fn sized(plain: Bytes, total: Int, prefix_len: Int, len: Int) -> Result<Bytes, FrameError>
-    let covered = prefix_len + len
     if len < 0
         Err(FrameError.BadLength(at: 0))
-    else if covered + trailer_len() > total
+    else if len > total - prefix_len - trailer_len()
         Err(FrameError.Truncated(at: total))
-    else if covered + trailer_len() < total
-        Err(FrameError.BadLength(at: covered + trailer_len()))
+    else if prefix_len + len + trailer_len() < total
+        Err(FrameError.BadLength(at: prefix_len + len + trailer_len()))
     else
-        checked(plain, prefix_len, covered)
+        checked(plain, prefix_len, prefix_len + len)
 
 // The payload, if the trailer matches what the prefix and the payload
 // hash to.

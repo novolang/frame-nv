@@ -5,6 +5,12 @@ bumps the minor number and a compatible one the patch; see [Version
 numbers in the Orbit package
 registry](https://novo-lang.org/docs/registry/semver.html).
 
+## Unreleased
+
+### Fixed
+
+- A frame whose length prefix declares a length too large for the frame is refused as truncated instead of overflowing the offset sum.
+
 ## 0.1.7 — 2026-09-25
 
 `decode` no longer hands back the caller's buffer from inside itself.
