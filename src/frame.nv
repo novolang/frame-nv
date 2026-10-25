@@ -163,7 +163,7 @@ pub fn encode_into(var dst: Cursor, payload: Bytes) -> Int
     let start = dst.pos()
     // The stuffed length is the cursor's own advance, so the count
     // `cobs.encode_into` answers says nothing this line does not.
-    let _ = cobs.encode_into(dst, body_of(payload))
+    let _ = cobs.encode_into(var dst, body_of(payload))
     dst.put_u8(delimiter())
     dst.pos() - start
 
@@ -191,7 +191,7 @@ pub fn encode_into(var dst: Cursor, payload: Bytes) -> Int
 // ```
 pub fn encode(payload: Bytes) -> Bytes
     var c = bytes.cursor_le(bytes.zeros(max_encoded_len(bytes.len(payload))))
-    let n = encode_into(c, payload)
+    let n = encode_into(var c, payload)
     bytes.slice(c.finish(), 0, n)
 
 // The length prefix, the payload and the check value in one buffer —
@@ -463,7 +463,7 @@ pub fn int_len(value: Int) -> Int
 // // -1 300 7
 // ```
 pub fn put_int(var dst: Cursor, value: Int) -> Int
-    varint.encode_into(dst, value)
+    varint.encode_into(var dst, value)
 
 // Read the signed integer at the cursor, leaving the cursor after it.
 //
@@ -473,4 +473,4 @@ pub fn put_int(var dst: Cursor, value: Int) -> Int
 // position after a read is where the next number starts, so a payload
 // of several is read by calling again.  See `put_int` for the example.
 pub fn take_int(var src: Cursor) -> Result<Int, VarintError>
-    varint.decode_from(src)
+    varint.decode_from(var src)

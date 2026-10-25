@@ -4,8 +4,8 @@
 source = "registry"
 url = "https://registry.novo-lang.org"
 req = "^0.1.0"
-version = "0.1.5"
-hash = "b5246fffda2b1e64be8512bd90fb01e833c74cb65169278d55a3c996de568cbb"
+version = "0.1.6"
+hash = "e586b40313adf41d5da1a81a26216566eab3fb79382a9e8ec8cf3018de37ca78"
 
 [crc-nv]
 source = "registry"
@@ -18,15 +18,15 @@ hash = "40beb4e717218196336c7f1a6f8c1dd3892ae580e94dcaf35fb088a043e728ef"
 source = "registry"
 url = "https://registry.novo-lang.org"
 req = "^0.1.1"
-version = "0.1.7"
-hash = "71f3ef504785e8bb4c9d7e72151be91dcebc7e11f658552009fae7205725bd53"
+version = "0.1.8"
+hash = "f2dc9a2e8320fc03fd9c0d48630a10e87cffcbf49ac282cae207e3a43b053982"
 
 [varint-nv]
 source = "registry"
 url = "https://registry.novo-lang.org"
 req = "^0.1.0"
-version = "0.1.6"
-hash = "acedfcf25d1a81e38f2093418ba5839425b8800dd6b85dad585aa6906635f75a"
+version = "0.1.7"
+hash = "bc27fef274283a796cb752dca058255c88a007fece398a5565373051e0069d61"
 
 [zigzag-nv]
 source = "registry"

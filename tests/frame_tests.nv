@@ -125,8 +125,8 @@ fn test_the_in_place_form_writes_into_the_callers_buffer() [io]
     // rather than a buffer and an offset.
     let payload = buf("6869")
     var c = bytes.cursor_le(bytes.zeros(frame.max_encoded_len(2) * 2))
-    let a = frame.encode_into(c, payload)
-    let b = frame.encode_into(c, payload)
+    let a = frame.encode_into(var c, payload)
+    let b = frame.encode_into(var c, payload)
     test.assert_eq(a, b)
     test.assert_eq(bytes.to_hex(bytes.slice(c.finish(), 0, a + b)),
                    frame_of_hi() + frame_of_hi())
@@ -289,17 +289,17 @@ fn test_numbers_in_a_payload_round_trip() [io]
     var w = bytes.cursor_le(bytes.zeros(frame.int_len(0 - 1)
                                           + frame.int_len(150)
                                           + frame.int_len(0 - 1000000)))
-    let a = frame.put_int(w, 0 - 1)
-    let b = frame.put_int(w, 150)
-    let c = frame.put_int(w, 0 - 1000000)
+    let a = frame.put_int(var w, 0 - 1)
+    let b = frame.put_int(var w, 150)
+    let c = frame.put_int(var w, 0 - 1000000)
     test.assert_eq(a, frame.int_len(0 - 1))
     test.assert_eq(b, frame.int_len(150))
     test.assert_eq(c, frame.int_len(0 - 1000000))
     var payload = frame.decode(frame.encode(w.finish()))!
-    var r = bytes.cursor_le(payload)
-    test.assert_eq(frame.take_int(r)!, 0 - 1)
-    test.assert_eq(frame.take_int(r)!, 150)
-    test.assert_eq(frame.take_int(r)!, 0 - 1000000)
+    var r = bytes.cursor_le(var payload)
+    test.assert_eq(frame.take_int(var r)!, 0 - 1)
+    test.assert_eq(frame.take_int(var r)!, 150)
+    test.assert_eq(frame.take_int(var r)!, 0 - 1000000)
     test.assert_eq(r.remaining(), 0)
 
 @test
@@ -316,7 +316,7 @@ fn test_a_payload_that_runs_out_mid_number_is_a_value() [io]
     // The frame was whole and what it carried did not parse, so the
     // fault is the varint's rather than the frame's.
     var r = bytes.cursor_le(buf("8080"))
-    match frame.take_int(r)
+    match frame.take_int(var r)
         Ok(v)  => test.fail("a truncated number decoded to ${v}")
         Err(e) => test.assert_true(str.contains(e.message(), "unfinished"),
                                    "wrong message: ${e.message()}")
