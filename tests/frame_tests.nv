@@ -181,6 +181,14 @@ fn test_an_unreadable_length_prefix_is_a_value() [io]
                                    "wrong message: ${e.message()}")
 
 @test
+fn test_a_length_prefix_at_or_above_two_to_the_63_is_a_value() [io]
+    // Nine 0xff bytes and a one decode to 2^64 - 1, which is negative as an Int.
+    match frame.decode(cobs.encode(buf("ffffffffffffffffff0100000000")))
+        Ok(_)  => test.fail("a negative length decoded")
+        Err(e) => test.assert_true(str.contains(e.message(), "disagrees"),
+                                   "wrong message: ${e.message()}")
+
+@test
 fn test_a_zero_inside_a_frame_is_the_cobs_layer_refusing() [io]
     // The one byte an encoded frame cannot contain.  The refusal names
     // the layer that rejected the bytes, because that is where a reader
